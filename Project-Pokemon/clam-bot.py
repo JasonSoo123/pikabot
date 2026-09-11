@@ -647,101 +647,174 @@ class ClamBot(Player):
         best_score = -1
         best_order = None
         
-        # Mega Evolution
+        # State trackers for the WINNING move
+        chosen_is_protect = False
+        chosen_is_mega = False
+
+        # Mega Evolution Check
         slot_index = battle.active_pokemon.index(pokemon)
-        should_mega = False
-        
+        can_mega = False
         if not self.mega:
-            should_mega = battle.can_mega_evolve[slot_index]
-            
-            if should_mega:
-                self.mega = True
-        
+            can_mega = battle.can_mega_evolve[slot_index]
+
         def_score, most_threatning_move, most_threat_opp = self.calc_defensive_score(pokemon, battle)
-                
+
         for move in available_moves:
-            
-            # --- Spread / Multi-Target Moves / Status / (NON-SINGLE TARGET DMGING MOVES) ---
-            if move.target.name in NON_SINGLE_TARGET:
+            # Safely extract accuracy penalty
+            acc = move.accuracy if isinstance(move.accuracy, (int, float)) else 1.0
+            acc_penalty = math.floor((100 - math.floor(acc * 100)) / 2)
+
+            # --- 1. Protect Moves ---
+            if move.id in PROTECT_MOVES:
+                current_score = def_score - acc_penalty
+                
+                # Penalty for consecutive Protect attempts
+                if self.protect_last_turn[slot_index]:
+                    current_score -= 40
+
+                if current_score > best_score:
+                    best_score = current_score
+                    best_order = self.create_order(move, move_target=0, mega=can_mega)
+                    chosen_is_protect = True
+                    chosen_is_mega = can_mega
+
+            # --- 2. Spread / Multi-Target Moves ---
+            elif move.target.name in NON_SINGLE_TARGET:
                 current_score = 0
-                # Tailwind conditions
-                
-                # Protect conditions
-                if move.id in PROTECT_MOVES:
-                    print(f"it used a protect move the score is: {def_score}")
-                    current_score = def_score
-                    
-                    if self.protect_last_turn[slot_index]:
-                        print("used it last turn")
-                        current_score -= 40
-                
                 for opp in battle.opponent_active_pokemon:
                     if opp is not None and not opp.fainted:
                         current_score += self.calculate_damage(pokemon, opp, move, battle)
-                        current_score -= math.floor((100 - math.floor(move.accuracy * 100))/2) # Accuracy
-                    
+
+                current_score -= acc_penalty
+
                 if current_score > best_score:
-                    
-                    if move.id in PROTECT_MOVES:
-                        self.protect_last_turn[slot_index] = True
-                    else:
-                        self.protect_last_turn[slot_index] = False
-                    
                     best_score = current_score
-                    best_order = self.create_order(move, move_target=0, mega=should_mega)
-                    
-            # --- Single Target Moves ---
+                    best_order = self.create_order(move, move_target=0, mega=can_mega)
+                    chosen_is_protect = False
+                    chosen_is_mega = can_mega
+
+            # --- 3. Single Target Moves ---
             else:
-                # Loop through both opponents to see which one we hit harder
                 for i, opp in enumerate(battle.opponent_active_pokemon):
-                    
                     if opp is not None and not opp.fainted:
-                        
-                        current_score = self.calculate_damage(pokemon, opp, move, battle)
-                        current_score -= math.floor((100 - math.floor(move.accuracy * 100))/2) # Accuracy
-                        
-                        if move.id == "fakeout":
-                            current_score *= 500
-                            
+                        dmg = self.calculate_damage(pokemon, opp, move, battle)
+                        current_score = dmg - acc_penalty
+
+                        # Additive priority bonus for Fake Out (only if it deals damage)
+                        if move.id == "fakeout" and dmg > 0:
+                            current_score += 200
+
                         if current_score > best_score:
-                            
-                            self.protect_last_turn[slot_index] = False
                             best_score = current_score
-                            
-                            # In poke-env: Target 1 is opponent's left (index 0). Target 2 is opponent's right (index 1)
-                            target = i + 1 
-                            best_order = self.create_order(move, move_target=target, mega=should_mega)
-        
-        
-        current_score = 0
+                            target = i + 1
+                            best_order = self.create_order(move, move_target=target, mega=can_mega)
+                            chosen_is_protect = False
+                            chosen_is_mega = can_mega
+
+        # --- 4. Smart Switching Logic ---
         current_hp_percent = pokemon.current_hp_fraction * 100
         is_going_to_faint = def_score >= current_hp_percent
         takes_alot_dmg = def_score > 80
-        switch_target = -1
-                
-        
-        
-        print(f"best order is: {best_order}")         
+
+        # Only consider switching if the active unit is in danger or heavily threatened
+        if is_going_to_faint or takes_alot_dmg:
+            for bench in battle.available_switches[slot_index]:
+                if bench.fainted or bench.current_hp_fraction == 0:
+                    continue
+
+                # Safely calculate estimated damage from the most threatening opponent
+                estimated_dmg = 0
+                if most_threat_opp and most_threatning_move:
+                    estimated_dmg = self.calculate_damage(most_threat_opp, bench, most_threatning_move, battle)
+
+                switch_score = (bench.current_hp_fraction * 100) - estimated_dmg
+
+                # Bonus for pivoting out after protecting
+                if self.protect_last_turn[slot_index]:
+                    switch_score += 30
+
+                # Priority boost to help switch score compete with attack scores when fainting
+                if is_going_to_faint:
+                    switch_score += 100
+
+                if switch_score > best_score:
+                    best_score = switch_score
+                    best_order = self.create_order(bench)
+                    chosen_is_protect = False
+                    chosen_is_mega = False
+
+        # --- Finalize Persistent State Updates ---
+        self.protect_last_turn[slot_index] = chosen_is_protect
+        if chosen_is_mega:
+            self.mega = True
+
+        print(f"best order is: {best_order}")
         return best_order
     
+    def choose_best_switch(self, slot_index, battle, exclude_mon=None):
         
+        best_score = -float('inf')
+        best_mon = None
+        
+        for pokemon in battle.available_switches[slot_index]:
+            
+            if pokemon.fainted or pokemon.current_hp_fraction == 0 or pokemon == exclude_mon:
+                continue
+            
+            def_score, _, _ = self.calc_defensive_score(pokemon, battle)
+            
+            current_score = (pokemon.current_hp_fraction * 100) - def_score
+            
+            if current_score > best_score:
+                best_score = current_score
+                best_mon = pokemon
+        
+        if best_mon is None and battle.available_switches[slot_index]:
+            for pokemon in battle.available_switches[slot_index]:
+                if pokemon != exclude_mon and not pokemon.fainted:
+                    return pokemon
+        
+        return best_mon
+    
     def choose_move(self, battle):
 
+        # Update clam bot data on opponnent
         self.update_opponent_knowledge(battle)
+        
         # If there is a force switch
         if any(battle.force_switch):
             left_switch = None
             right_switch = None
-            if battle.force_switch[0] and battle.available_switches[0]:
-                left_switch = self.create_order(battle.available_switches[0][0])
-            if battle.force_switch[1] and battle.available_switches[1]:
-                right_switch = self.create_order(battle.available_switches[1][0])
-            if left_switch and right_switch:
-                return DoubleBattleOrder(left_switch, right_switch)
-            elif left_switch:
-                return left_switch
-            elif right_switch:
-                return right_switch
+            
+            # Double forced switch
+            if battle.force_switch[0] and battle.force_switch[1]:
+                
+                best_left_mon = self.choose_best_switch(0, battle)
+                best_right_mon = self.choose_best_switch(1, battle, exclude_mon=best_left_mon)
+                
+                if best_left_mon:
+                    left_switch = self.create_order(best_left_mon)
+                if best_right_mon:
+                    right_switch = self.create_order(best_right_mon)
+                
+                if left_switch and right_switch:
+                    return DoubleBattleOrder(left_switch, right_switch)
+                elif left_switch:
+                    return left_switch
+                elif right_switch:
+                    return right_switch
+            
+            # Left forced switch    
+            elif battle.force_switch[0]:
+                best_left_mon = self.choose_best_switch(0, battle)
+                if best_left_mon:
+                    return self.create_order(best_left_mon)
+            
+            # Right forced switch
+            elif battle.force_switch[1]:
+                best_right_mon = self.choose_best_switch(1, battle)
+                if best_right_mon:
+                    return self.create_order(best_right_mon)
             
         if battle.available_moves[0] and battle.available_moves[1]:
             
