@@ -85,6 +85,8 @@ with open(DIRECTORY + '/champions-vgc-stats.json', 'r') as file:
 fakeout_pokemon = []
 tailwind_pokemon = []
 trickroom_pokemon = []
+PROTECT_MOVES = ["protect", "detect", "banefulbunker", "burningbulwark", "craftyshield", 
+                 "kingsshield", "maxguard", "obtruct", "spikyshield", "silktrap"]
 # -------------------------- getting fakeout_pokemon ------------------------- #
 for pokemon_name, data in POKEMON_VGC_DATA.items():
     
@@ -108,6 +110,7 @@ class ClamBot(Player):
         # Initialize opp team move pool attribute
         self.opp_team_movepool = {}
         self.mega = False
+        self.protect_last_turn = [False, False]
     
     """Register opp pokemon into the dict"""    
     def register_opp_pokemon(self, pokemon_name):
@@ -174,41 +177,6 @@ class ClamBot(Player):
             # once they are revealed in battle. We can sync that with our custom tracker!
             for revealed_move in opp_mon.moves:
                 self.record_revealed_move(opp_mon.species, revealed_move)
-    
-    
-    """Helper function to determine if pokemon is faster than other pokemon"""
-    def isFaster(self, my_pokemon, opp_pokemon):
-        if my_pokemon is None or opp_pokemon is None or my_pokemon.fainted or opp_pokemon.fainted:
-            return False
-        
-        # Get speed stat of my pokemon and base stats of opps
-        my_speed = my_pokemon.stats.get('spe', 0)
-        opp_base_speed = opp_pokemon.base_stats.get('spe', 0)
-        
-        # Get the speed boosts if there are any
-        my_speed_boost = my_pokemon.boosts.get('spe', 0)
-        opp_speed_boost = opp_pokemon.boosts.get('spe', 0)
-        
-        # Calculate speed
-        if my_speed_boost >= 0:
-            my_speed = math.floor(my_speed * ((2 + my_speed_boost)/2))
-        else:
-            my_speed = math.floor(my_speed * (2/(2 - my_speed_boost)))
-        
-        # Calculate opps speed
-        if opp_speed_boost >= 0:
-            opp_speed = math.floor((math.floor((2 * opp_base_speed + 31) * (1/2)) + 5) * ((2 + opp_speed_boost)/2))
-        else:
-            opp_speed = math.floor((math.floor((2 * opp_base_speed + 31) * (1/2)) + 5) * (2/(2 - opp_speed_boost)))
-
-        # Check for par status
-        if my_pokemon.status is not None and my_pokemon.status.name == 'PAR':
-            my_speed = math.floor(my_speed * 0.5)
-
-        if opp_pokemon.status is not None and opp_pokemon.status.name == 'PAR':
-            opp_speed = math.floor(opp_speed * 0.5)
-        print(f"my speed is: {my_speed}, opp speed is: {opp_speed}")
-        return my_speed > opp_speed
     
     """Returns an ability for the pokemon"""
     def get_ability(self, pokemon):
@@ -308,8 +276,21 @@ class ClamBot(Player):
     def calculate_damage(self, attacker, defender, move, battle):
         
         # if non damaging move return 0
-        if move.base_power == 0:
+        if move.base_power == 0 and move.id not in ["superfang", "naturesmadness", "ruination"]:
             return 0
+        
+        # Fixed damage conditions
+        def_hp = self.get_stat(defender, 'hp')
+        atk_hp = self.get_stat(attacker, 'hp')
+        if move.id in ["superfang", "naturesmadness", "ruination"]:
+            return (defender.current_hp_fraction / 2) * 100
+        
+        if move.id == "finalgambit":
+            return (atk_hp / def_hp) * 100
+        
+        if move.id == "endeavor":
+            fixed_dmg = max(0, def_hp - atk_hp)
+            return (fixed_dmg / def_hp) * 100
         
         # Get abilities
         atk_ability = self.get_ability(attacker)
@@ -355,8 +336,19 @@ class ClamBot(Player):
         elif atk_item == "choicespecs" and atk_stat_name == "spa":
             atk_stat *= 1.5
     
-        # Calculate damage without multipliers    
-        damage = math.floor(math.floor(22 * move.base_power * atk_stat / def_stat) / 50) + 2
+        # Calculate damage without multipliers
+        
+        base_power = move.base_power
+        
+        # Special scaling base_power moves
+        if move.id in ["eruption", "waterspout", "dragonenergy"]:
+            base_power = max(1, math.floor(150 * attacker.current_hp_fraction))
+            
+        elif move.id in ["crushgrip", "wringout"]:
+            base_power = math.floor(120 * defender.current_hp_fraction) + 1
+            
+                  
+        damage = math.floor(math.floor(22 * base_power * atk_stat / def_stat) / 50) + 2
         
         move_type = move.type
         
@@ -621,31 +613,34 @@ class ClamBot(Player):
         # Random roll average (0.85 - 1)
         damage = math.floor(damage * 0.925)
         
-        def_hp_stat = self.get_stat(defender, "hp")
-        
-        damage_percentage = (damage / def_hp_stat) * 100
+        damage_percentage = (damage / def_hp) * 100
         print(f"move: {move.id} did {damage_percentage} to {defender.species}")
         return damage_percentage
     
+    """Helper function to calculate defensive score for defensive moves such as protect or switching"""
     def calc_defensive_score(self, my_pokemon, battle):
         most_damage = -1
         highest_damaging_move = None
-        
+        opp_pokemon = None
         for opp in battle.opponent_active_pokemon:
+
             if opp is not None and not opp.fainted:
-                for move in self.opp_team_movepool[opp.species.capitalized()]:
+                for move in self.opp_team_movepool[opp.species.capitalize()]:
+    
                     try:
-                        move_obj = Move(move)
-                    except Exception:
+                        move_obj = Move(move, 9)
+                    except Exception as e:
+                        print(f"Failed to create move '{move}': {e}")
                         continue
-                    
+                  
                     damage = self.calculate_damage(opp, my_pokemon, move_obj, battle)
                     
                     if damage > most_damage:
                         most_damage = damage
                         highest_damaging_move = move_obj
+                        opp_pokemon = opp
                     
-        return most_damage, highest_damaging_move
+        return most_damage, highest_damaging_move, opp_pokemon
     
     """Helper function to choose the best order for a specific pokemon in the current battle"""
     def choose_best_order(self, pokemon, battle, available_moves):
@@ -661,6 +656,8 @@ class ClamBot(Player):
             
             if should_mega:
                 self.mega = True
+        
+        def_score, most_threatning_move, most_threat_opp = self.calc_defensive_score(pokemon, battle)
                 
         for move in available_moves:
             
@@ -669,11 +666,27 @@ class ClamBot(Player):
                 current_score = 0
                 # Tailwind conditions
                 
+                # Protect conditions
+                if move.id in PROTECT_MOVES:
+                    print(f"it used a protect move the score is: {def_score}")
+                    current_score = def_score
+                    
+                    if self.protect_last_turn[slot_index]:
+                        print("used it last turn")
+                        current_score -= 40
+                
                 for opp in battle.opponent_active_pokemon:
                     if opp is not None and not opp.fainted:
                         current_score += self.calculate_damage(pokemon, opp, move, battle)
+                        current_score -= math.floor((100 - math.floor(move.accuracy * 100))/2) # Accuracy
                     
                 if current_score > best_score:
+                    
+                    if move.id in PROTECT_MOVES:
+                        self.protect_last_turn[slot_index] = True
+                    else:
+                        self.protect_last_turn[slot_index] = False
+                    
                     best_score = current_score
                     best_order = self.create_order(move, move_target=0, mega=should_mega)
                     
@@ -685,16 +698,28 @@ class ClamBot(Player):
                     if opp is not None and not opp.fainted:
                         
                         current_score = self.calculate_damage(pokemon, opp, move, battle)
+                        current_score -= math.floor((100 - math.floor(move.accuracy * 100))/2) # Accuracy
                         
                         if move.id == "fakeout":
                             current_score *= 500
                             
                         if current_score > best_score:
+                            
+                            self.protect_last_turn[slot_index] = False
                             best_score = current_score
                             
                             # In poke-env: Target 1 is opponent's left (index 0). Target 2 is opponent's right (index 1)
                             target = i + 1 
                             best_order = self.create_order(move, move_target=target, mega=should_mega)
+        
+        
+        current_score = 0
+        current_hp_percent = pokemon.current_hp_fraction * 100
+        is_going_to_faint = def_score >= current_hp_percent
+        takes_alot_dmg = def_score > 80
+        switch_target = -1
+                
+        
         
         print(f"best order is: {best_order}")         
         return best_order
