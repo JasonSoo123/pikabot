@@ -111,6 +111,7 @@ class ClamBot(Player):
         self.opp_team_movepool = {}
         self.mega = False
         self.protect_last_turn = [False, False]
+        self.item_used = [False, False]
     
     """Register opp pokemon into the dict"""    
     def register_opp_pokemon(self, pokemon_name):
@@ -642,8 +643,58 @@ class ClamBot(Player):
                     
         return most_damage, highest_damaging_move, opp_pokemon
     
+    """Helper function to check which pokemon is faster """
+    def isFaster(self, my_pokemon, opp_pokemon, battle):
+        
+        my_speed = self.get_stat(my_pokemon, "spe")
+        opp_speed = self.get_stat(opp_pokemon, "spe")
+        
+        my_item = self.get_item(my_pokemon)
+        opp_item = self.get_item(opp_pokemon)
+        
+        my_ability = self.get_ability(my_pokemon)
+        opp_ability = self.get_ability(opp_pokemon)
+        
+        if my_item == "choicescarf":
+            my_speed *= 1.5
+        if opp_item == "choicescarf":
+            opp_speed *= 1.5
+        
+        if SideCondition.TAILWIND in battle.side_conditions:
+            my_speed *= 2
+        if SideCondition.TAILWIND in battle.opponent_side_conditions:
+            opp_speed *= 2
+        
+        if battle.weather == Weather.RAINDANCE:
+            if my_ability == "swiftswim":
+                my_speed *= 2
+            if opp_ability == "swiftswim":
+                opp_speed *= 2
+        
+        elif battle.weather == Weather.SUNNYDAY:
+            if my_ability == "chlorophyll":
+                my_speed *= 2
+            if opp_ability == "chlorophyll":
+                opp_speed *= 2
+                
+        elif battle.weather == Weather.SANDSTORM:
+            if my_ability == "sandrush":
+                my_speed *= 2
+            if opp_ability == "sandrush":
+                opp_speed *= 2
+                
+        elif battle.weather == Weather.SNOWSCAPE:
+            if my_ability == "slushrush":
+                my_speed *= 2
+            if opp_ability == "slushrush":
+                opp_speed *= 2
+         
+        if self.item_used and my_ability == "unburden":
+            my_speed *= 2              
+         
     """Helper function to choose the best order for a specific pokemon in the current battle"""
     def choose_best_order(self, pokemon, battle, available_moves):
+        
         best_score = -1
         best_order = None
         
@@ -780,6 +831,13 @@ class ClamBot(Player):
 
         # Update clam bot data on opponnent
         self.update_opponent_knowledge(battle)
+        
+        # Light check for item used
+        for index, pokemon in enumerate(battle.active_pokemons):
+            if pokemon is not None and pokemon.item is None:
+                self.item_used[index] = True
+        else:
+            self.item_used[index] = False
         
         # If there is a force switch
         if any(battle.force_switch):
