@@ -690,7 +690,13 @@ class ClamBot(Player):
                 opp_speed *= 2
          
         if self.item_used and my_ability == "unburden":
-            my_speed *= 2              
+            my_speed *= 2
+        
+        # Check for trickroom speed order reverses
+        if Field.TRICK_ROOM in battle.fields:
+            return my_speed < opp_speed
+        else:
+            return my_speed > opp_speed              
          
     """Helper function to choose the best order for a specific pokemon in the current battle"""
     def choose_best_order(self, pokemon, battle, available_moves):
