@@ -747,7 +747,7 @@ class ClamBot(Player):
             
             # Get priority
             move_priority = getattr(move, 'priority', 0)
-
+             
             # --- 1. Protect Moves ---
             if move.id in PROTECT_MOVES:
                 current_score = def_score - acc_penalty
@@ -761,8 +761,12 @@ class ClamBot(Player):
                     best_order = self.create_order(move, move_target=0, mega=can_mega)
                     chosen_is_protect = True
                     chosen_is_mega = can_mega
+            
+            # --- 2. Status Moves ---
+            elif move.category == MoveCategory.STATUS:        
+               current_score = 0
 
-            # --- 2. Spread / Multi-Target Moves ---
+            # --- 3. Spread / Multi-Target Moves ---
             elif move.target.name in NON_SINGLE_TARGET:
                 current_score = 0
                 
@@ -788,7 +792,7 @@ class ClamBot(Player):
                     chosen_is_protect = False
                     chosen_is_mega = can_mega
 
-            # --- 3. Single Target Moves ---
+            # --- 4. Single Target Moves ---
             else:
                 for i, opp in enumerate(battle.opponent_active_pokemon):
                     if opp is not None and not opp.fainted:
@@ -830,7 +834,7 @@ class ClamBot(Player):
                             chosen_is_protect = False
                             chosen_is_mega = can_mega
 
-        # --- 4. Smart Switching Logic ---
+        # --- 5. Smart Switching Logic ---
         if is_going_to_faint or takes_alot_dmg:
             for bench in battle.available_switches[slot_index]:
                 if bench.fainted or bench.current_hp_fraction == 0:
