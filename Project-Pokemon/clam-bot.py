@@ -715,6 +715,10 @@ class ClamBot(Player):
             can_mega = battle.can_mega_evolve[slot_index]
 
         def_score, most_threatning_move, most_threat_opp = self.calc_defensive_score(pokemon, battle)
+        
+        current_hp_percent = pokemon.current_hp_fraction * 100
+        is_going_to_faint = def_score >= current_hp_percent
+        takes_alot_dmg = def_score > 80
 
         for move in available_moves:
             # Safely extract accuracy penalty
@@ -738,11 +742,22 @@ class ClamBot(Player):
             # --- 2. Spread / Multi-Target Moves ---
             elif move.target.name in NON_SINGLE_TARGET:
                 current_score = 0
+                
                 for opp in battle.opponent_active_pokemon:
                     if opp is not None and not opp.fainted:
-                        current_score += self.calculate_damage(pokemon, opp, move, battle)
+                        dmg = self.calculate_damage(pokemon, opp, move, battle)
+                        current_score += dmg
+                        
+                        # SPEED HEURISTIC: Outspeed KO bonus
+                        if self.isFaster(pokemon, opp, battle) and dmg >= opp.current_hp_fraction:
+                            current_score += 150
 
                 current_score -= acc_penalty
+
+                # SPEED HEURISTIC: If slower and about to faint, penalize attacking moves
+                if is_going_to_faint and not all(self.isFaster(pokemon, opp, battle) 
+                        for opp in battle.opponent_active_pokemon if opp and not opp.fainted):
+                    current_score *= 0.5
 
                 if current_score > best_score:
                     best_score = current_score
@@ -754,8 +769,19 @@ class ClamBot(Player):
             else:
                 for i, opp in enumerate(battle.opponent_active_pokemon):
                     if opp is not None and not opp.fainted:
+                        
                         dmg = self.calculate_damage(pokemon, opp, move, battle)
                         current_score = dmg - acc_penalty
+
+                        is_faster = self.isFaster(pokemon, opp, battle)
+
+                        # SPEED HEURISTIC 1: Outspeed KO Bonus
+                        if is_faster and dmg >= opp.current_hp_fraction:
+                            current_score += 150
+
+                        # SPEED HEURISTIC 2: Slower + Threatened Penalty
+                        elif not is_faster and is_going_to_faint:
+                            current_score *= 0.5
 
                         # Additive priority bonus for Fake Out (only if it deals damage)
                         if move.id == "fakeout" and dmg > 0:
@@ -769,28 +795,20 @@ class ClamBot(Player):
                             chosen_is_mega = can_mega
 
         # --- 4. Smart Switching Logic ---
-        current_hp_percent = pokemon.current_hp_fraction * 100
-        is_going_to_faint = def_score >= current_hp_percent
-        takes_alot_dmg = def_score > 80
-
-        # Only consider switching if the active unit is in danger or heavily threatened
         if is_going_to_faint or takes_alot_dmg:
             for bench in battle.available_switches[slot_index]:
                 if bench.fainted or bench.current_hp_fraction == 0:
                     continue
 
-                # Safely calculate estimated damage from the most threatening opponent
                 estimated_dmg = 0
                 if most_threat_opp and most_threatning_move:
                     estimated_dmg = self.calculate_damage(most_threat_opp, bench, most_threatning_move, battle)
 
                 switch_score = (bench.current_hp_fraction * 100) - estimated_dmg
 
-                # Bonus for pivoting out after protecting
                 if self.protect_last_turn[slot_index]:
                     switch_score += 30
 
-                # Priority boost to help switch score compete with attack scores when fainting
                 if is_going_to_faint:
                     switch_score += 100
 
@@ -839,7 +857,7 @@ class ClamBot(Player):
         self.update_opponent_knowledge(battle)
         
         # Light check for item used
-        for index, pokemon in enumerate(battle.active_pokemons):
+        for index, pokemon in enumerate(battle.active_pokemon):
             if pokemon is not None and pokemon.item is None:
                 self.item_used[index] = True
         else:
