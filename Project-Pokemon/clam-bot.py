@@ -697,7 +697,27 @@ class ClamBot(Player):
             return my_speed < opp_speed
         else:
             return my_speed > opp_speed              
-         
+    
+    """Helper function to check if the pokemon is on the ground or not"""
+    def is_grounded(self, pokemon):
+        if pokemon is None:
+            return True
+    
+        # Flying types are not grounded
+        if (pokemon.type_1 and pokemon.type_1.name == "FLYING") or \
+        (pokemon.type_2 and pokemon.type_2.name == "FLYING"):
+            return False
+        
+        # Levitate ability is not grounded
+        if pokemon.ability and pokemon.ability.lower() == "levitate":
+            return False
+        
+        # Air Balloon item is not grounded
+        if pokemon.item and pokemon.item.lower() == "airballoon":
+            return False
+        
+        return True  
+       
     """Helper function to choose the best order for a specific pokemon in the current battle"""
     def choose_best_order(self, pokemon, battle, available_moves):
         
@@ -724,6 +744,9 @@ class ClamBot(Player):
             # Safely extract accuracy penalty
             acc = move.accuracy if isinstance(move.accuracy, (int, float)) else 1.0
             acc_penalty = math.floor((100 - math.floor(acc * 100)) / 2)
+            
+            # Get priority
+            move_priority = getattr(move, 'priority', 0)
 
             # --- 1. Protect Moves ---
             if move.id in PROTECT_MOVES:
@@ -749,7 +772,7 @@ class ClamBot(Player):
                         current_score += dmg
                         
                         # SPEED HEURISTIC: Outspeed KO bonus
-                        if self.isFaster(pokemon, opp, battle) and dmg >= opp.current_hp_fraction:
+                        if self.isFaster(pokemon, opp, battle) and dmg >= (opp.current_hp_fraction * 100):
                             current_score += 150
 
                 current_score -= acc_penalty
@@ -770,22 +793,35 @@ class ClamBot(Player):
                 for i, opp in enumerate(battle.opponent_active_pokemon):
                     if opp is not None and not opp.fainted:
                         
-                        dmg = self.calculate_damage(pokemon, opp, move, battle)
-                        current_score = dmg - acc_penalty
+                        if move_priority > 0 and Field.PSYCHIC_TERRAIN in battle.fields and self.is_grounded(opp):
+                            current_score = 0
+                        else:
+                            dmg = self.calculate_damage(pokemon, opp, move, battle)
+                            current_score = dmg - acc_penalty
 
-                        is_faster = self.isFaster(pokemon, opp, battle)
+                            is_faster = self.isFaster(pokemon, opp, battle)
+                        
+                            # --- PRIORITY & SPEED HEURISTICS ---
 
-                        # SPEED HEURISTIC 1: Outspeed KO Bonus
-                        if is_faster and dmg >= opp.current_hp_fraction:
-                            current_score += 150
+                            # 1. PRIORITY OHKO: Secure the kill before taking damage
+                            if move_priority > 0 and dmg >= (opp.current_hp_fraction * 100):
+                                current_score += 200
 
-                        # SPEED HEURISTIC 2: Slower + Threatened Penalty
-                        elif not is_faster and is_going_to_faint:
-                            current_score *= 0.5
+                            # 2. STANDARD OUTSPEED OHKO
+                            elif is_faster and dmg >= (opp.current_hp_fraction * 100):
+                                current_score += 150
 
-                        # Additive priority bonus for Fake Out (only if it deals damage)
-                        if move.id == "fakeout" and dmg > 0:
-                            current_score += 200
+                            # 3. DESPERATION PRIORITY (Going to die, slower, but can strike first via Priority!)
+                            elif is_going_to_faint and not is_faster and move_priority > 0:
+                                current_score += 100  
+
+                            # 4. SLOWER + THREATENED PENALTY (Non-priority moves will likely fail)
+                            elif is_going_to_faint and not is_faster and move_priority <= 0:
+                                current_score *= 0.5
+
+                            # Additive priority bonus for Fake Out (only if it deals damage)
+                            if move.id == "fakeout" and dmg > 0:
+                                current_score += 200
 
                         if current_score > best_score:
                             best_score = current_score
