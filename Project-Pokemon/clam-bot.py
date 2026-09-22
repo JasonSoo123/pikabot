@@ -12,6 +12,7 @@ from poke_env.battle.weather import Weather
 from poke_env.battle.field import Field
 from poke_env.battle.status import Status
 from poke_env.battle.move import Move
+from poke_env.battle.target import Target
 
 EX_VGC_TEAM = '''
 Incineroar @ Sitrus Berry  
@@ -101,6 +102,31 @@ for pokemon_name, data in POKEMON_VGC_DATA.items():
 # ---------------------------------- VGC bot --------------------------------- #
 NON_SINGLE_TARGET = ["ALL_ADJACENT_FOES", "ALL_ADJACENT", "ALL", "SELF", "ADJACENT_ALLY_OR_SELF", "ALLY_SIDE",
                      "ALLY_TEAM", "SELF", "ADJACENT_ALLY", "SCRIPTED", "FOE_SIDE"]
+
+STATUS_MOVES = [Status.BRN, Status.TOX, Status.PSN, Status.FRZ, Status.PAR, Status.SLP]
+
+SELF_OR_ALLY_TARGETS = [
+    Target.SELF,
+    Target.ALLYSIDE,
+    Target.ALLYTEAM,
+    Target.ADJACENT_ALLY,
+    Target.ADJACENT_ALLY_OR_SELF,
+    Target.ALLIES,
+]
+
+POWDER_MOVES = {"spore", "sleeppowder", "ragepowder", "stunspore", "poisonpowder"}
+
+SETUP_MOVES = {
+    "swordsdance": ["atk"],
+    "nastyplot": ["spa"],
+    "dragondance": ["atk", "spe"],
+    "calmmind": ["spa", "spd"],
+    "quiverdance": ["spa", "spd", "spe"],
+    "bulkup": ["atk", "def"],
+    "irondefense": ["def"],
+    "coils": ["atk", "def", "accuracy"],
+    "agility": ["spe"],
+}
 class ClamBot(Player):
     
     def __init__(self, *args, **kwargs):
@@ -643,6 +669,21 @@ class ClamBot(Player):
                     
         return most_damage, highest_damaging_move, opp_pokemon
     
+    """Helper function to calculate self status move score"""
+    def calc_self_status_score(self, my_pokemon, move, battle, slot_index, is_going_to_faint):
+        
+        partner_slot = 1 if slot_index == 0 else 0
+        parter = battle.active_pokemon[partner_slot] if len(battle.active_pokemon) >  1 else None
+        
+        if move.id in SETUP_MOVES:
+            
+            if is_going_to_faint:
+                return 0
+            
+            
+            
+        
+    
     """Helper function to check which pokemon is faster """
     def isFaster(self, my_pokemon, opp_pokemon, battle):
         
@@ -764,7 +805,13 @@ class ClamBot(Player):
             
             # --- 2. Status Moves ---
             elif move.category == MoveCategory.STATUS:        
-               current_score = 0
+                acc = move.accuracy if isinstance(move.accuracy, (int, float)) else 1.0
+                acc_penalty = math.floor((100 - math.floor(acc * 100)) / 2)
+                move_priority = getattr(move, 'priority', 0)
+                
+                    
+                            
+                        
 
             # --- 3. Spread / Multi-Target Moves ---
             elif move.target.name in NON_SINGLE_TARGET:
