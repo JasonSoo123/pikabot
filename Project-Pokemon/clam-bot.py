@@ -100,8 +100,7 @@ for pokemon_name, data in POKEMON_VGC_DATA.items():
     if "trickroom" in moves and pokemon_name.lower() not in trickroom_pokemon:
         trickroom_pokemon.append(pokemon_name.lower())
 # ---------------------------------- VGC bot --------------------------------- #
-NON_SINGLE_TARGET = ["ALL_ADJACENT_FOES", "ALL_ADJACENT", "ALL", "SELF", "ADJACENT_ALLY_OR_SELF", "ALLY_SIDE",
-                     "ALLY_TEAM", "SELF", "ADJACENT_ALLY", "SCRIPTED", "FOE_SIDE"]
+NON_SINGLE_TARGET = {Target.ALL_ADJACENT_FOES, Target.ALL_ADJACENT, Target.ALL, Target.FOE_SIDE}
 
 STATUS_MOVES = [Status.BRN, Status.TOX, Status.PSN, Status.FRZ, Status.PAR, Status.SLP]
 
@@ -112,6 +111,7 @@ SELF_OR_ALLY_TARGETS = [
     Target.ADJACENT_ALLY,
     Target.ADJACENT_ALLY_OR_SELF,
     Target.ALLIES,
+    Target.ALL
 ]
 
 POWDER_MOVES = {"spore", "sleeppowder", "ragepowder", "stunspore", "poisonpowder"}
@@ -125,7 +125,7 @@ SETUP_MOVES = {
     "bulkup": ["atk", "def"],
     "irondefense": ["def"],
     "coils": ["atk", "def", "accuracy"],
-    "agility": ["spe"],
+    "agility": ["spe"]
 }
 class ClamBot(Player):
     
@@ -670,15 +670,51 @@ class ClamBot(Player):
         return most_damage, highest_damaging_move, opp_pokemon
     
     """Helper function to calculate self status move score"""
-    def calc_self_status_score(self, my_pokemon, move, battle, slot_index, is_going_to_faint):
+    def calc_self_status_score(self, my_pokemon, partner_pokemon, move, battle, slot_index, is_going_to_faint):
         
         partner_slot = 1 if slot_index == 0 else 0
         parter = battle.active_pokemon[partner_slot] if len(battle.active_pokemon) >  1 else None
         
+        # Boosting moves
         if move.id in SETUP_MOVES:
             
-            if is_going_to_faint:
+            # dont setup if you are gonna die
+            if is_going_to_faint and not all(self.isFaster(my_pokemon, opp, battle) 
+                    for opp in battle.opponent_active_pokemon 
+                     if opp is not None and not opp.fainted):
                 return 0
+            
+            stats_boosted = SETUP_MOVES[move.id]
+        
+            # Check if ALL stats this move boosts are already at +4 or higher
+            # Python's all() function returns True only if every check in the loop is True
+            if all(my_pokemon.boosts.get(stat, 0) >= 4 for stat in stats_boosted):
+                return 0     # Don't use it if we are already fully boosted
+
+            score = 100
+            if my_pokemon.current_hp_fraction > 0.5:
+                score += 20
+            return score
+        elif move.id == "tailwind":
+            if SideCondition.TAILWIND in battle.side_conditions:
+                return 0
+            return 160
+        elif move.id in ["reflect", "lightscreen", "auroraveil"]:
+            
+            if  move.id == "auroraveil":
+                if battle.weather != Weather.SNOW or battle.weather != Weather.SNOWSCAPE:
+                    return 0
+                if SideCondition.AURORA_VEIL in battle.side_conditions:
+                    return 0
+                return 130
+            elif move.id == "lightscreen":
+                if SideCondition.LIGHT_SCREEN in battle.side_conditions:
+                    return 0
+                return 120
+            else:
+                if SideCondition.REFLECT in battle.side_conditions:
+                    return 0
+                return 120
             
             
             
