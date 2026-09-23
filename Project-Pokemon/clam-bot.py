@@ -336,15 +336,16 @@ class ClamBot(Player):
         def_stat = self.get_stat(defender, def_stat_name)
         
         # If defender is rock type and in sandstorm boost spdef by 50%
-        if PokemonType.ROCK in defender.types and battle.weather == Weather.SANDSTORM and def_stat_name == "spd":
+        if PokemonType.ROCK in defender.types and Weather.SANDSTORM in battle.weather and def_stat_name == "spd":
             def_stat *= 1.5
         
         # If defender is ice type and in snow boost def by 50%
-        if PokemonType.ICE in defender.types and battle.weather == Weather.SNOWSCAPE and def_stat_name == "def":
+        if (PokemonType.ICE in defender.types and (Weather.SNOWSCAPE in battle.weather 
+                        or Weather.SNOW in battle.weather)  and def_stat_name == "def"):
             def_stat *= 1.5 
         
         # If attacker has solar power in the sun boost spatk by 50%
-        if battle.weather == Weather.SUNNYDAY and atk_ability == "solarpower" and atk_stat_name == "spa":
+        if Weather.SUNNYDAY in battle.weather and atk_ability == "solarpower" and atk_stat_name == "spa":
             atk_stat *= 1.5
         
          # If burned and physical move w/o guts and w guts      
@@ -461,9 +462,9 @@ class ClamBot(Player):
         if move_type == PokemonType.WATER:
             
             # Weather check
-            if battle.weather == Weather.RAINDANCE:
+            if Weather.RAINDANCE in battle.weather:
                 damage *= 1.5
-            elif battle.weather == Weather.SUNNYDAY:
+            elif Weather.SUNNYDAY in battle.weather:
                 damage *= 0.5
 
             if atk_item in ["mysticwater", "splashplate" ,"waveincense" ,"seaincense"]:
@@ -479,9 +480,9 @@ class ClamBot(Player):
         elif move_type == PokemonType.FIRE:
             
             # Weather check
-            if battle.weather == Weather.RAINDANCE:
+            if Weather.RAINDANCE in battle.weather:
                 damage *= 0.5
-            elif battle.weather == Weather.SUNNYDAY:
+            elif Weather.SUNNYDAY in battle.weather:
                 damage *= 1.5
                 
             if atk_item in ["charcoal", "flameplate"]:
@@ -582,7 +583,7 @@ class ClamBot(Player):
             if atk_item in ["softsand",  "earthplate"]:
                 damage *= 1.2
                 
-            if atk_ability == "sandforce" and battle.weather == Weather.SANDSTORM:
+            if atk_ability == "sandforce" and Weather.SANDSTORM in battle.weather:
                 damage *= 1.3
                 
             if def_ability == "levitate" or def_ability == "eartheater":
@@ -624,7 +625,7 @@ class ClamBot(Player):
                 
             if atk_ability == "rockpayload":
                 damage *= 1.5
-            elif atk_ability == "sandforce" and battle.weather == Weather.SANDSTORM:
+            elif atk_ability == "sandforce" and Weather.SANDSTORM in battle.weather:
                 damage *= 1.3
         
         elif move_type == PokemonType.STEEL:
@@ -634,7 +635,7 @@ class ClamBot(Player):
                 
             if atk_ability in ["steelworker", "steelyspirit"]:
                 damage *= 1.5
-            elif atk_ability == "sandforce" and battle.weather == Weather.SANDSTORM:
+            elif atk_ability == "sandforce" and Weather.SANDSTORM in battle.weather:
                 damage *= 1.3
                 
         # Random roll average (0.85 - 1)
@@ -670,10 +671,10 @@ class ClamBot(Player):
         return most_damage, highest_damaging_move, opp_pokemon
     
     """Helper function to calculate self status move score"""
-    def calc_self_status_score(self, my_pokemon, partner_pokemon, move, battle, slot_index, is_going_to_faint):
+    def self_ally_global_status_score(self, my_pokemon, move, battle, slot_index, is_going_to_faint):
         
         partner_slot = 1 if slot_index == 0 else 0
-        parter = battle.active_pokemon[partner_slot] if len(battle.active_pokemon) >  1 else None
+        partner = battle.active_pokemon[partner_slot] if len(battle.active_pokemon) >  1 else None
         
         # Boosting moves
         if move.id in SETUP_MOVES:
@@ -694,15 +695,19 @@ class ClamBot(Player):
             score = 100
             if my_pokemon.current_hp_fraction > 0.5:
                 score += 20
+                
             return score
+        
         elif move.id == "tailwind":
-            if SideCondition.TAILWIND in battle.side_conditions:
+            # dont use tailwind if it is already active or trickroom is active
+            if SideCondition.TAILWIND in battle.side_conditions or Field.TRICK_ROOM in battle.fields:
                 return 0
             return 160
+        
         elif move.id in ["reflect", "lightscreen", "auroraveil"]:
             
             if  move.id == "auroraveil":
-                if battle.weather != Weather.SNOW or battle.weather != Weather.SNOWSCAPE:
+                if battle.weather not in Weather.SNOW and battle.weather not in Weather.SNOWSCAPE:
                     return 0
                 if SideCondition.AURORA_VEIL in battle.side_conditions:
                     return 0
@@ -715,8 +720,75 @@ class ClamBot(Player):
                 if SideCondition.REFLECT in battle.side_conditions:
                     return 0
                 return 120
+        
+        elif move.id in ["followme", "ragepowder"]:
+            score = 50
+            if partner and not partner.fainted:
+                
+                if self.calc_defensive_score(partner, battle) > 30:
+                    score += 120
+                
+                if (partner.current_hp_fraction * 100) < 50:
+                    score += 50
+                    
+                if is_going_to_faint:
+                    score += 50
+                    
+            return score
+        
+        elif move.id == "helpinghand":
+            if partner and not partner.fainted:
+                score = 0
+                for moves in battle.available_moves[partner_slot]:
+                    for opp in battle.opponent_active_pokemon:
+                        current_score = self.calculate_damage(partner, opp, moves, battle)
+                        if current_score > score:
+                            score = current_score
+                
+                score *= 1.5
+                return score
             
+            return 0
+        
+        elif move.id in ["raindance", "sunnyday", "snowscape", "sandstorm"]:
+            weather_map = {
+            "raindance": Weather.RAINDANCE,
+            "sunnyday": Weather.SUNNYDAY,
+            "snowscape": Weather.SNOWSCAPE,
+            "sandstorm": Weather.SANDSTORM
+            }
             
+            if weather_map[move.id] in battle.weather:
+                return 0 # Weather is already active
+            
+            score = 50
+            
+            if partner and not partner.fainted:
+                score = 130
+            
+            if battle.weather:
+                score += 50
+            
+            return score
+        
+        elif move.id in ["recover", "roost", "slackoff", "softboiled", "morningsun", "synthesis", "moonlight"]:
+            if my_pokemon.current_hp_fraction >= 0.8:
+                return 0
+            return 150 if my_pokemon.current_hp_fraction <= 0.5 else 100
+        
+        elif move.id == "trickroom":
+            score = 0
+            
+            if all(not self.isFaster(my_pokemon, opp, battle) for opp in battle.opponent_active_pokemon if opp is not None and not opp.fainted):
+                score += 50
+                
+            if partner and not partner.fainted:
+                if all(not self.isFaster(partner, opp, battle) for opp in battle.opponent_active_pokemon if opp is not None and not opp.fainted):
+                    score += 130
+            
+            return score
+        
+        return 40
             
         
     
