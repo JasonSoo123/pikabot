@@ -1,1 +1,0 @@
-# pokemon-champions-vgc-model

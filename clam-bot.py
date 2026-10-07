@@ -106,8 +106,8 @@ STATUS_MOVES = [Status.BRN, Status.TOX, Status.PSN, Status.FRZ, Status.PAR, Stat
 
 SELF_OR_ALLY_TARGETS = [
     Target.SELF,
-    Target.ALLYSIDE,
-    Target.ALLYTEAM,
+    Target.ALLY_SIDE,
+    Target.ALLY_TEAM,
     Target.ADJACENT_ALLY,
     Target.ADJACENT_ALLY_OR_SELF,
     Target.ALLIES,
@@ -1091,8 +1091,8 @@ class ClamBot(Player):
         for index, pokemon in enumerate(battle.active_pokemon):
             if pokemon is not None and pokemon.item is None:
                 self.item_used[index] = True
-        else:
-            self.item_used[index] = False
+            else:
+                self.item_used[index] = False
         
         # If there is a force switch
         if any(battle.force_switch):
