@@ -3,7 +3,8 @@ from poke_env.battle.move_category import MoveCategory
 from poke_env.battle.field import Field
 from pikabot.constants import PROTECT_MOVES, NON_SINGLE_TARGET
 
-class OrderingMixin:
+
+class OrderingMixin():
     """Helper function to choose the best order for a specific pokemon in the current battle"""
     def choose_best_order(self, pokemon, battle, available_moves):
         
@@ -59,7 +60,7 @@ class OrderingMixin:
                         
 
                 # --- 3. Spread / Multi-Target Moves ---
-            elif move.target.name in NON_SINGLE_TARGET:
+            elif move.target in NON_SINGLE_TARGET:
                 current_score = 0
                 
                 for opp in battle.opponent_active_pokemon:

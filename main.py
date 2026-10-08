@@ -1,7 +1,6 @@
 import asyncio
 
 from poke_env.player import RandomPlayer
- 
 from pikabot.bot import PikaBot
 from pikabot.team import EX_VGC_TEAM
 

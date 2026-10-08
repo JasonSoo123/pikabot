@@ -3,6 +3,7 @@ from poke_env.battle.target import Target
 
 PROTECT_MOVES = ["protect", "detect", "banefulbunker", "burningbulwark", "craftyshield", 
                  "kingsshield", "maxguard", "obtruct", "spikyshield", "silktrap"]
+
 NON_SINGLE_TARGET = {Target.ALL_ADJACENT_FOES, Target.ALL_ADJACENT, Target.ALL, Target.FOE_SIDE}
 
 STATUS_MOVES = [Status.BRN, Status.TOX, Status.PSN, Status.FRZ, Status.PAR, Status.SLP]

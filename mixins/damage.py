@@ -352,7 +352,7 @@ class DamageMixin:
         damage = math.floor(damage * 0.925)
         
         damage_percentage = (damage / def_hp) * 100
-        print(f"move: {move.id} did {damage_percentage} to {defender.species}")
+        # print(f"move: {move.id} did {damage_percentage} to {defender.species}")
         return damage_percentage
     
     """Helper function to calculate defensive score for defensive moves such as protect or switching"""
