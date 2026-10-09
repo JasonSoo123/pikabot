@@ -1,7 +1,7 @@
 import math
 from poke_env.battle.move_category import MoveCategory
 from poke_env.battle.field import Field
-from pikabot.constants import PROTECT_MOVES, NON_SINGLE_TARGET
+from pikabot.constants import PROTECT_MOVES, NON_SINGLE_TARGET, SELF_OR_ALLY_TARGETS
 
 
 class OrderingMixin():
@@ -50,14 +50,35 @@ class OrderingMixin():
                     chosen_is_mega = can_mega
             
             # --- 2. Status Moves ---
-            elif move.category == MoveCategory.STATUS:        
-                acc = move.accuracy if isinstance(move.accuracy, (int, float)) else 1.0
-                acc_penalty = math.floor((100 - math.floor(acc * 100)) / 2)
-                move_priority = getattr(move, 'priority', 0)
+            elif move.category == MoveCategory.STATUS and move.base_power == 0:        
                 
+                if move.target in SELF_OR_ALLY_TARGETS:
+                    current_score = self.self_ally_global_status_score(pokemon, move,
+                                                                       battle, slot_index, is_going_to_faint)
+                    if pokemon.ability == "prankster":
+                        current_score += 30
                     
+                    if current_score > best_score:
+                        best_score = current_score
+                        move_target = 0
                         
-                        
+                        if move.id in ["coaching", "decorate"]:
+                            move_target = -1 if slot_index == 1 else -2
+                            
+                        best_order = self.create_order(move, move_target=move_target, mega=can_mega)
+                        chosen_is_protect = False
+                        chosen_is_mega = can_mega
+                else:
+                    for i, opp in enumerate(battle.opponent_active_pokemon):
+                        if opp is not None and not opp.fainted: 
+                            current_score = self.opponent_targeting_status_score(pokemon, move, opp, battle)
+                            
+                            if current_score > best_score:
+                                best_score = current_score
+                                target = i + 1
+                                best_order = self.create_order(move, move_target=target, mega=can_mega)
+                                chosen_is_protect = False
+                                chosen_is_mega = can_mega
 
                 # --- 3. Spread / Multi-Target Moves ---
             elif move.target in NON_SINGLE_TARGET:
