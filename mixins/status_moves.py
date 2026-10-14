@@ -363,12 +363,16 @@ class StatusMoveMixin:
                 target_atk = self.get_stat(target, "atk")
                 target_def = self.get_stat(target, "def")
                 score += 30 + (target_atk // 4) + (target_def // 4)
+            
 
             # Scale by how threatening the target is (its offensive stats)
             threat_score = max(self.get_stat(target, "atk"), self.get_stat(target, "spa")) // 2
             score += threat_score
+            
+            if move_id == "partingshot":
+                # Parting Shot (-1 Atk, -1 Spa)
+                score += threat_score // 3
 
-            print(f"score: {score} for {move}")
             return max(0, score)
 
         # Category 3: Disruption moves

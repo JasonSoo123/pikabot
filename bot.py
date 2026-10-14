@@ -18,6 +18,7 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         self.mega = False
         self.protect_last_turn = [False, False]
         self.item_used = [False, False]
+        self.last_moved_used = [None, None]
     def choose_move(self, battle):
     
         # Update clam bot data on opponnent
