@@ -18,10 +18,14 @@ class StatusMoveMixin:
         
     }
     STAT_DEBUFF = {
-        "charm", "growl", "tailwhip", "screech", "flash", "confide",
-        "captivate", "leer", "sandattack", "stickyweb", "electroweb",
-        "partingshot", "chillyreception", "sweetscent", "faketears",
-        "eerieimpulse", "tickle", "scaryface", "mudsport", "mudslap"
+        "charm": ["atk"],
+        "faketears": ["spd"],
+        "screech": ["def"],
+        "leer": ["def"],
+        "growl": ["atk"],
+        "eerieimpulse": ["spa"],
+        "tickle": ["atk", "def"],
+        "partingshot": ["atk", "spa"],
     }
     
     DISRUPTION = {
@@ -62,10 +66,11 @@ class StatusMoveMixin:
             return score
 
         elif move.id == "tailwind":
+
             # dont use tailwind if it is already active or trickroom is active
             if SideCondition.TAILWIND in battle.side_conditions or Field.TRICK_ROOM in battle.fields:
                 return 0
-            return 120
+            score += 140
 
         elif move.id in ["reflect", "lightscreen", "auroraveil"]:
 
@@ -74,15 +79,15 @@ class StatusMoveMixin:
                     return 0
                 if SideCondition.AURORA_VEIL in battle.side_conditions:
                     return 0
-                return 110
+                score += 110
             elif move.id == "lightscreen":
                 if SideCondition.LIGHT_SCREEN in battle.side_conditions:
                     return 0
-                return 80
+                score += 80
             else:
                 if SideCondition.REFLECT in battle.side_conditions:
                     return 0
-                return 80
+                score += 80
 
         elif move.id in ["followme", "ragepowder"]:
 
@@ -307,12 +312,11 @@ class StatusMoveMixin:
             else:  # Other status moves
                 score += 40 + (threat_score // 2)
 
-            print(f"score: {score} for {move}")
             return max(0, score)
 
         # Category 2: Stat-debuff moves
         elif move_id in self.STAT_DEBUFF:
-
+            
             # Check if target has abilities that make the move fail
             ability = self.get_ability(target)
             if ability in ["clearbody", "whitesmoke", "fullmetalbody", "mirrorarmor"]:
@@ -371,8 +375,14 @@ class StatusMoveMixin:
             
             if move_id == "partingshot":
                 # Parting Shot (-1 Atk, -1 Spa)
-                score += threat_score // 3
+                score += threat_score // 2
 
+            
+            lowered_stats = self.STAT_DEBUFF.get(move_id, [])
+            if lowered_stats:
+                worst_drop = min(target.boosts.get(stat, 0) for stat in lowered_stats)
+                score *= max(0, 1 - (abs(worst_drop) * 0.25)) if worst_drop < 0 else 1
+                
             return max(0, score)
 
         # Category 3: Disruption moves
@@ -412,33 +422,23 @@ class StatusMoveMixin:
 
                 if not (is_trickroom_user or is_tailwind_user):
                     return 0
-
+                
                 # Check if target is already Taunted
-                # Note: poke-env may not expose this directly, so we'll skip this check
-                # as per the limitation mentioned in the instructions
-                pass
-
+                if hasattr(target, 'effects') and Effect.TAUNT in target.effects:
+                    return 0
+                
                 # Reduce value if that side's Tailwind or Trick Room is already active
                 side_condition_modifier = 1.0
-                if SideCondition.TAILWIND in battle.side_conditions:
+                if SideCondition.TAILWIND in battle.opponent_side_conditions:
                     side_condition_modifier *= 0.5  # Less useful if Tailwind already up
                 if Field.TRICK_ROOM in battle.fields:
                     side_condition_modifier *= 0.5  # Less useful if Trick Room already active
 
                 # Base score for Taunt
-                score += 60
-
-                # Bonus for confirmed knowledge
-                target_species = target.species.capitalize() if target.species else ""
-                if target_species and target_species in self.opp_team_movepool:
-                    movepool_entry = self.opp_team_movepool[target_species]
-                    if ("trickroom" in movepool_entry and movepool_entry["trickroom"].get("status") == 0) or \
-                       ("tailwind" in movepool_entry and movepool_entry["tailwind"].get("status") == 0):
-                        score += 20  # Bonus for confirmed knowledge
+                score += 100
 
                 score *= side_condition_modifier
 
-                print(f"score: {score} for {move}")
                 return max(0, score)
 
             elif move_id == "encore":
@@ -476,7 +476,6 @@ class StatusMoveMixin:
                         if any(boost > 0 for boost in target.boosts.values()):
                             score += 15
 
-                print(f"score: {score} for {move}")
                 return score
 
         # If move doesn't fit any category, return 50 base value

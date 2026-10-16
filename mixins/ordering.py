@@ -22,6 +22,32 @@ class OrderingMixin():
         is_going_to_faint = def_score >= current_hp_percent
         takes_alot_dmg = def_score > 80
 
+        # --- Partner awareness: faster partner's best move KOs the target ---
+        partner_slot = 1 if slot_index == 0 else 0
+        partner = battle.active_pokemon[partner_slot] if len(battle.active_pokemon) > 1 else None
+        partner_kos_opp = {}   # opponent index -> True if the faster partner's best move KOs it
+
+        
+        if partner and not partner.fainted:
+            
+            partner_is_faster = self.isFaster(pokemon, partner, battle)
+
+            for i, opp in enumerate(battle.opponent_active_pokemon):
+                if opp is not None and not opp.fainted:
+                    partner_best_dmg = 0
+                    best_move_prio = 0
+                    for partner_move in battle.available_moves[partner_slot]:
+                        partner_dmg = self.calculate_damage(partner, opp, partner_move, battle)
+                        
+                        if partner_dmg > partner_best_dmg:
+                            partner_best_dmg = partner_dmg
+                            best_move_prio = partner_move.priority
+                            
+                    if partner_is_faster or best_move_prio > 0:
+                        partner_kos_opp[i] = partner_best_dmg >= (opp.current_hp_fraction * 100)
+        
+        
+        
         # Store all scored candidates
         scored_candidates = []
 
@@ -50,15 +76,13 @@ class OrderingMixin():
                 if move.target in SELF_OR_ALLY_TARGETS:
                     current_score = self.self_ally_global_status_score(pokemon, move,
                                                                        battle, slot_index, is_going_to_faint)
-                    if pokemon.ability == "prankster":
-                        current_score += 30
 
-                    move_target = 0
+                    ally_move_target = 0
                     if move.id in ["coaching", "decorate"]:
-                        move_target = \
+                        ally_move_target = \
                         battle.to_showdown_target(move, battle.active_pokemon[0 if slot_index == 1 else 1])
 
-                    order = self.create_order(move, move_target=move_target, mega=can_mega)
+                    order = self.create_order(move, move_target=ally_move_target, mega=can_mega)
                     scored_candidates.append({"score": current_score, "order": order, "is_protect": False, "is_mega": can_mega})
                 else:
                     for i, opp in enumerate(battle.opponent_active_pokemon):
@@ -126,6 +150,10 @@ class OrderingMixin():
                             if move.id == "fakeout" and dmg > 0:
                                 current_score += 200
 
+                        # Faster partner's best move likely KOs this target first
+                        if partner_kos_opp.get(i):
+                            current_score *= 0.35
+                            
                         target = i + 1
                         order = self.create_order(move, move_target=target, mega=can_mega)
                         scored_candidates.append({"score": current_score, "order": order, "is_protect": False, "is_mega": can_mega})
