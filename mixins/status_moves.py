@@ -442,57 +442,42 @@ class StatusMoveMixin:
                 return max(0, score)
 
             elif move_id == "encore":
-                # ENCORE: use it only when ALL of these are true:
-                # 1. I am faster than the target (self.isFaster already respects Trick Room)
-                # 2. the target's last used move is known and is a power-boosting move
-                #    (a setup move in SETUP_MOVES, or any move whose boosts raise the user's stats)
-                #    or a Protect-style move (in PROTECT_MOVES)
-                # 3. it does not have Oblivious, Aroma Veil, Good as Gold, or Magic Bounce
+                # Check if target is None or fainted
+                if target is None or target.fainted:
+                    return 0
 
-                # Check if I am faster than the target
+                # Check if target.last_move is None
+                if getattr(target, 'last_move', None) is None:
+                    return 0
+
+                # Check if I am NOT faster
                 if not self.isFaster(my_pokemon, target, battle):
                     return 0
 
-                # Check if target's last used move is known
-                # This is a limitation - poke-env may not expose last used move directly
-                # We'll need to check if we can access it through target or battle
-                # For now, we'll return 0 if we can't determine this, as per instructions
-                # "if poke-env does not expose it, say so, use the safest fallback (return 0 for Encore)"
-
-                # Let's try to check if target has a last_move attribute
-                last_move = getattr(target, 'last_move', None)
-                if last_move is None:
-                    # Try to get it from battle if possible
-                    # This is speculative - we don't see a standard way
-                    last_move = None
-
-                if last_move is None:
-                    # Safest fallback as per instructions
+                # Check if target is already Encored
+                if hasattr(target, 'effects') and Effect.ENCORE in target.effects:
                     return 0
 
-                # Check if last move is a power-boosting move or Protect-style move
-                is_boosting_move = False
-
-                # Check if it's a setup move
-                if last_move.id in SETUP_MOVES:
-                    is_boosting_move = True
-                else:
-                    # Check if it raises user's stats
-                    if last_move.boosts and any(boost > 0 for boost in last_move.boosts.values()):
-                        is_boosting_move = True
-
-                # Check if it's a Protect-style move
-                if last_move.id in PROTECT_MOVES:
-                    is_boosting_move = True  # Protect counts as usable for Encore
-
-                if not is_boosting_move:
+                # Check if target has blocking ability
+                ability = self.get_ability(target)
+                if ability in ["oblivious", "aromaveil", "goodasgold", "magicbounce"]:
                     return 0
 
-                # Base score for Encore
-                score += 50
-                
+                # Check if last move is not in SETUP_MOVES and not in PROTECT_MOVES
+                last_move_id = target.last_move.id
+                if last_move_id not in SETUP_MOVES and last_move_id not in PROTECT_MOVES:
+                    return 0
+
+                # Otherwise, calculate HIGH score
+                score = 130  # base score
+                if last_move_id in SETUP_MOVES:
+                    # Check if target already has any positive boost
+                    if hasattr(target, 'boosts') and target.boosts:
+                        if any(boost > 0 for boost in target.boosts.values()):
+                            score += 15
+
                 print(f"score: {score} for {move}")
-                return max(0, score)
+                return score
 
-        # If move doesn't fit any category, return 0
-        return 0
+        # If move doesn't fit any category, return 50 base value
+        return 50 

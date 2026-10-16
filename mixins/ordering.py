@@ -131,7 +131,18 @@ class OrderingMixin():
                         scored_candidates.append({"score": current_score, "order": order, "is_protect": False, "is_mega": can_mega})
 
         # --- 5. Smart Switching Logic ---
-        if is_going_to_faint or takes_alot_dmg:
+        # Total negative stat stages on the active pokemon (switching out resets them)
+        boost_stats = ["atk", "def", "spa", "spd", "spe"]
+        if Field.TRICK_ROOM in battle.fields:
+            boost_stats.remove("spe")  # a Speed drop is good under Trick Room
+        negative_boost_total = sum(
+            -pokemon.boosts.get(stat, 0)
+            for stat in boost_stats
+            if pokemon.boosts.get(stat, 0) < 0
+        )
+        has_heavy_drops = negative_boost_total >= 2
+
+        if is_going_to_faint or takes_alot_dmg or has_heavy_drops:
             for bench in battle.available_switches[slot_index]:
                 if bench.fainted or bench.current_hp_fraction == 0:
                     continue
@@ -147,6 +158,9 @@ class OrderingMixin():
 
                 if is_going_to_faint:
                     switch_score += 100
+
+                # More negative boosts on the active mon = higher score for switching out
+                switch_score += negative_boost_total * 25
 
                 order = self.create_order(bench)
                 scored_candidates.append({"score": switch_score, "order": order, "is_protect": False, "is_mega": False})

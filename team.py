@@ -19,15 +19,15 @@ Modest Nature
 - Water Spout  
 - Fake Out   
 
-Basculegion (M) @ Focus Sash  
-Ability: Adaptability  
+Whimsicott @ Focus Sash  
+Ability: Prankster  
 Level: 50  
-EVs: 32 HP / 32 Atk / 2 SpA  
-Lonely Nature  
-- Aqua Jet  
-- Crunch  
-- Flip Turn  
-- Hydro Pump  
+EVs: 2 HP / 32 SpA / 32 Spe  
+Timid Nature   
+- Encore  
+- Tailwind  
+- Moonblast  
+- Taunt 
 
 Kingambit @ Black Glasses  
 Ability: Defiant  
@@ -39,15 +39,15 @@ Quiet Nature
 - Foul Play  
 - Focus Blast  
 
-Glimmora @ Leftovers  
-Ability: Toxic Debris  
+Rotom-Heat @ Leftovers  
+Ability: Levitate  
 Level: 50  
 EVs: 2 HP / 32 SpA / 32 Spe  
 Timid Nature  
-- Acid Armor  
-- Dazzling Gleam  
-- Earth Power  
-- Energy Ball  
+- Will-O-Wisp  
+- Protect  
+- Thunderbolt  
+- Overheat 
 
 Aegislash @ Metal Coat  
 Ability: Stance Change  
