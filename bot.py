@@ -351,7 +351,7 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         my_bench = []
         if hasattr(battle, 'team'):
             active_species = [mon.species for mon in battle.active_pokemon if mon is not None and mon.species]
-            for pokemon in battle.team.values():
+            for pokemon in battle.available_switches[0]:
                 if pokemon.species not in active_species:
                     hp_pct = round(pokemon.current_hp_fraction * 100, 1) if pokemon.current_hp_fraction is not None else 0.0
                     status = "None"
