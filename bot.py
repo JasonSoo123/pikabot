@@ -89,21 +89,17 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
 
         if battle.available_moves[0] and battle.available_moves[1]:
 
-            left_order = self.choose_best_order(battle.active_pokemon[0], battle, battle.available_moves[0])
-            right_order = self.choose_best_order(battle.active_pokemon[1], battle, battle.available_moves[1])
+            left_order, right_order = self.choose_best_double_order(battle)
 
-            return DoubleBattleOrder(left_order, right_order)
-
-        elif battle.available_moves[0]:
-            return self.choose_best_order(battle.active_pokemon[0], battle, battle.available_moves[0])
-
-        elif battle.available_moves[1]:
-            return self.choose_best_order(battle.active_pokemon[1], battle, battle.available_moves[1])
-
-        # Fallback to random selection
-        else:
-            print("random move")
-            return self.choose_random_doubles_move(battle)
+            if left_order is not None and right_order is not None:
+                return DoubleBattleOrder(left_order, right_order)
+            elif left_order is not None:
+                return left_order
+            elif right_order is not None:
+                return right_order
+            else:
+                print("random move")
+                return self.choose_random_doubles_move(battle)
 
     def choose_move(self, battle):
         # Get the chosen order from the model
