@@ -203,105 +203,89 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
 
     def _build_turn_snapshot(self, battle, last_turn_history):
         """Build the turn snapshot for the current turn."""
-        # Weather
-        weather = "None"
-        if hasattr(battle, 'weather') and battle.weather:
-            from poke_env.battle.weather import Weather
-            if battle.weather in Weather:
-                weather_map = {
-                    Weather.RAINDANCE: "Rain",
-                    Weather.SUNNYDAY: "Sun",
-                    Weather.SANDSTORM: "Sandstorm",
-                    Weather.SNOWSCAPE: "Snow"
-                }
-                weather = weather_map.get(battle.weather, "None")
-
-        # Terrain
-        terrain = "None"
+        from poke_env.battle.weather import Weather
         from poke_env.battle.field import Field
+        from poke_env.battle.side_condition import SideCondition
+        from poke_env.battle.status import Status
+
+        # ---------- Weather ----------
+        weather = "None"
+        weather_map = {
+            Weather.RAINDANCE: "Rain",
+            Weather.SUNNYDAY: "Sun",
+            Weather.SANDSTORM: "Sandstorm",
+            Weather.SNOWSCAPE: "Snow",
+        }
+        raw_weather = getattr(battle, 'weather', None)
+        if isinstance(raw_weather, dict):
+            for weather_enum, weather_name in weather_map.items():
+                if weather_enum in raw_weather:
+                    weather = weather_name
+                    break
+        elif raw_weather in weather_map:
+            weather = weather_map[raw_weather]
+
+        # ---------- Terrain ----------
+        terrain = "None"
+        terrain_map = {
+            Field.ELECTRIC_TERRAIN: "Electric",
+            Field.GRASSY_TERRAIN: "Grassy",
+            Field.MISTY_TERRAIN: "Misty",
+            Field.PSYCHIC_TERRAIN: "Psychic",
+        }
         if hasattr(battle, 'fields'):
-            terrain_map = {
-                Field.ELECTRIC_TERRAIN: "Electric",
-                Field.GRASSY_TERRAIN: "Grassy",
-                Field.MISTY_TERRAIN: "Misty",
-                Field.PSYCHIC_TERRAIN: "Psychic"
-            }
-            for field_field, terrain_name in terrain_map.items():
-                if field_field in battle.fields:
+            for field_enum, terrain_name in terrain_map.items():
+                if field_enum in battle.fields:
                     terrain = terrain_name
                     break
 
-        # Trick Room (remaining turns)
+        # ---------- Trick Room ----------
         trick_room = 0
         if hasattr(battle, 'fields') and Field.TRICK_ROOM in battle.fields:
             start_turn = battle.fields[Field.TRICK_ROOM]
             trick_room = max(0, 5 - (battle.turn - start_turn))
 
-        # Side conditions for my side
-        my_side_conditions = {
-            "tailwind": 0, "reflect": 0, "light_screen": 0, "aurora_veil": 0,
-            "stealth_rock": 0, "spikes": 0, "toxic_spikes": 0, "sticky_web": 0
-        }
-        if hasattr(battle, 'side_conditions'):
-            side_condition_map = {
-                "tailwind": "tailwind",
-                "reflect": "reflect",
-                "light_screen": "light_screen",
-                "aurora_veil": "aurora_veil",
-                "stealth_rock": "stealth_rock",
-                "spikes": "spikes",
-                "toxic_spikes": "toxic_spikes",
-                "sticky_web": "sticky_web"
+        # ---------- Side conditions (shared logic for both sides) ----------
+        def build_side_conditions(side_conditions):
+            sc = {
+                "tailwind": 0, "reflect": 0, "light_screen": 0, "aurora_veil": 0,
+                "stealth_rock": 0, "spikes": 0, "toxic_spikes": 0, "sticky_web": 0,
             }
-            for condition_key, battle_key in side_condition_map.items():
-                # Find the matching SideCondition enum value
-                from poke_env.battle.side_condition import SideCondition
-                for sc in SideCondition:
-                    if sc.name.lower() == battle_key.upper():
-                        if sc in battle.side_conditions:
-                            start_turn = battle.side_conditions[sc]
-                            if condition_key in ["tailwind", "reflect", "light_screen", "aurora_veil"]:
-                                # Timed conditions: remaining turns
-                                durations = {"tailwind": 4, "reflect": 5, "light_screen": 5, "aurora_veil": 5}
-                                my_side_conditions[condition_key] = max(0, durations[condition_key] - (battle.turn - start_turn))
-                            else:
-                                # Hazard conditions: layer count
-                                my_side_conditions[condition_key] = start_turn  # Assuming start_turn stores layer count
-                        break
+            if not side_conditions:
+                return sc
 
-        # Side conditions for opponent side
-        opponent_side_conditions = {
-            "tailwind": 0, "reflect": 0, "light_screen": 0, "aurora_veil": 0,
-            "stealth_rock": 0, "spikes": 0, "toxic_spikes": 0, "sticky_web": 0
-        }
-        if hasattr(battle, 'opponent_side_conditions'):
-            side_condition_map = {
-                "tailwind": "tailwind",
-                "reflect": "reflect",
-                "light_screen": "light_screen",
-                "aurora_veil": "aurora_veil",
-                "stealth_rock": "stealth_rock",
-                "spikes": "spikes",
-                "toxic_spikes": "toxic_spikes",
-                "sticky_web": "sticky_web"
+            # Timed effects: dict value is the turn the effect started
+            timed = {
+                SideCondition.TAILWIND: ("tailwind", 4),
+                SideCondition.REFLECT: ("reflect", 5),
+                SideCondition.LIGHT_SCREEN: ("light_screen", 5),
+                SideCondition.AURORA_VEIL: ("aurora_veil", 5),
             }
-            for condition_key, battle_key in side_condition_map.items():
-                # Find the matching SideCondition enum value
-                from poke_env.battle.side_condition import SideCondition
-                for sc in SideCondition:
-                    if sc.name.lower() == battle_key.upper():
-                        if sc in battle.opponent_side_conditions:
-                            start_turn = battle.opponent_side_conditions[sc]
-                            if condition_key in ["tailwind", "reflect", "light_screen", "aurora_veil"]:
-                                # Timed conditions: remaining turns
-                                durations = {"tailwind": 4, "reflect": 5, "light_screen": 5, "aurora_veil": 5}
-                                opponent_side_conditions[condition_key] = max(0, durations[condition_key] - (battle.turn - start_turn))
-                            else:
-                                # Hazard conditions: layer count
-                                opponent_side_conditions[condition_key] = start_turn  # Assuming start_turn stores layer count
-                        break
+            for enum_key, (json_key, duration) in timed.items():
+                if enum_key in side_conditions:
+                    start_turn = side_conditions[enum_key]
+                    sc[json_key] = max(0, duration - (battle.turn - start_turn))
 
-        # My active Pokemon
+            # Stackable hazards: dict value is the layer count
+            if SideCondition.SPIKES in side_conditions:
+                sc["spikes"] = side_conditions[SideCondition.SPIKES]
+            if SideCondition.TOXIC_SPIKES in side_conditions:
+                sc["toxic_spikes"] = side_conditions[SideCondition.TOXIC_SPIKES]
+
+            # Non-stackable hazards: present => 1
+            if SideCondition.STEALTH_ROCK in side_conditions:
+                sc["stealth_rock"] = 1
+            if SideCondition.STICKY_WEB in side_conditions:
+                sc["sticky_web"] = 1
+
+            return sc
+
+        my_side_conditions = build_side_conditions(
+            getattr(battle, 'side_conditions', None))
+        opponent_side_conditions = build_side_conditions(
+            getattr(battle, 'opponent_side_conditions', None))
+
+        # ---------- My active Pokemon ----------
         my_active = []
         if hasattr(battle, 'active_pokemon'):
             for i, mon in enumerate(battle.active_pokemon):
@@ -309,7 +293,6 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                     hp_pct = round(mon.current_hp_fraction * 100, 1) if mon.current_hp_fraction is not None else 0.0
                     status = "None"
                     if mon.status:
-                        from poke_env.battle.status import Status
                         status_map = {
                             Status.BRN: "BRN", Status.FNT: "FNT", Status.FRZ: "FRZ",
                             Status.PAR: "PAR", Status.PSN: "PSN", Status.SLP: "SLP", Status.TOX: "TOX"
@@ -325,7 +308,7 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                         "ability": mon.ability if mon.ability else None
                     })
 
-        # Opponent active Pokemon (limited info)
+        # ---------- Opponent active Pokemon (limited info) ----------
         opponent_active = []
         if hasattr(battle, 'opponent_active_pokemon'):
             for i, mon in enumerate(battle.opponent_active_pokemon):
@@ -333,7 +316,6 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                     hp_pct = round(mon.current_hp_fraction * 100, 1) if mon.current_hp_fraction is not None else 0.0
                     status = "None"
                     if mon.status:
-                        from poke_env.battle.status import Status
                         status_map = {
                             Status.BRN: "BRN", Status.FNT: "FNT", Status.FRZ: "FRZ",
                             Status.PAR: "PAR", Status.PSN: "PSN", Status.SLP: "SLP", Status.TOX: "TOX"
@@ -347,7 +329,7 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                         "status": status
                     })
 
-        # My bench
+        # ---------- My bench ----------
         my_bench = []
         if hasattr(battle, 'team'):
             active_species = [mon.species for mon in battle.active_pokemon if mon is not None and mon.species]
@@ -356,7 +338,6 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                     hp_pct = round(pokemon.current_hp_fraction * 100, 1) if pokemon.current_hp_fraction is not None else 0.0
                     status = "None"
                     if pokemon.status:
-                        from poke_env.battle.status import Status
                         status_map = {
                             Status.BRN: "BRN", Status.FNT: "FNT", Status.FRZ: "FRZ",
                             Status.PAR: "PAR", Status.PSN: "PSN", Status.SLP: "SLP", Status.TOX: "TOX"
@@ -369,7 +350,7 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                         "status": status
                     })
 
-        # Opponent bench (limited info)
+        # ---------- Opponent bench (limited info) ----------
         opponent_bench = []
         if hasattr(battle, 'opponent_team'):
             active_species = [mon.species for mon in battle.opponent_active_pokemon if mon is not None and mon.species]
@@ -381,7 +362,7 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                         "hp_pct": hp_pct
                     })
 
-        # Build the turn snapshot
+        # ---------- Build the turn snapshot ----------
         turn_snapshot = {
             "turn_number": battle.turn,
             "field": {
@@ -405,19 +386,48 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         return turn_snapshot
 
     def _get_opponent_actions(self, battle, turn_number):
-        """Get opponent actions from battle.observations for a specific turn."""
+        """Extract opponent actions for the given (just-finished) turn from battle.observations."""
         opponent_actions = []
-        if hasattr(battle, 'observations') and turn_number in battle.observations:
-            for event in battle.observations[turn_number]:
-                # Parse the event to get readable format
-                # This is a simplified version - in practice we'd need to parse the actual event structure
-                if hasattr(event, '__str__'):
-                    event_str = str(event)
-                    # Convert to format like "p2a: Incineroar used Parting Shot"
-                    if ':' in event_str and 'used' in event_str:
-                        opponent_actions.append(event_str)
-                    elif 'switched' in event_str.lower():
-                        opponent_actions.append(event_str)
+
+        observations = getattr(battle, 'observations', None)
+        if not isinstance(observations, dict) or turn_number not in observations:
+            return opponent_actions
+
+        obs = observations[turn_number]
+        events = getattr(obs, 'events', None)
+        if not isinstance(events, list):
+            return opponent_actions
+
+        # Determine the opponent's role ("p1" / "p2")
+        opp_role = getattr(battle, 'opponent_role', None)
+        if opp_role is None:
+            player_role = getattr(battle, 'player_role', None)
+            if player_role == "p1":
+                opp_role = "p2"
+            elif player_role == "p2":
+                opp_role = "p1"
+        if opp_role is None:
+            return opponent_actions
+
+        for event in events:
+            if not isinstance(event, list) or len(event) < 3:
+                continue
+            event_type = event[1]
+            pokemon_str = event[2]  # e.g. "p2a: Incineroar"
+            if not isinstance(pokemon_str, str) or not pokemon_str.startswith(opp_role):
+                continue
+
+            if event_type == "move":
+                move_name = event[3] if len(event) > 3 else ""
+                action = f"{pokemon_str} used {move_name}"
+                target = event[4] if len(event) > 4 else ""
+                if target:
+                    action += f" targeting {target}"
+                opponent_actions.append(action)
+
+            elif event_type == "switch":
+                opponent_actions.append(f"{pokemon_str} switched in")
+
         return opponent_actions
 
     def _order_to_action_strings(self, order, battle):

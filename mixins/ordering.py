@@ -3,12 +3,20 @@ import numpy as np
 import random
 from poke_env.battle.move_category import MoveCategory
 from poke_env.battle.field import Field
+from poke_env.player.battle_order import Pokemon
 from pikabot.constants import PROTECT_MOVES, NON_SINGLE_TARGET, SELF_OR_ALLY_TARGETS
 
 
 class OrderingMixin():
     """Helper function to choose the best order for a specific pokemon in the current battle"""
     def choose_best_order(self, pokemon, battle, available_moves):
+
+        # --- Reset switch lock when a new turn begins (keyed by battle + turn) ---
+        lock_key = (battle.battle_tag, battle.turn)
+        if getattr(self, '_switch_lock_key', None) != lock_key:
+            self._switch_lock = None
+            self._switch_lock_slot = None
+            self._switch_lock_key = lock_key
 
         # Mega Evolution Check
         slot_index = battle.active_pokemon.index(pokemon)
@@ -27,9 +35,8 @@ class OrderingMixin():
         partner = battle.active_pokemon[partner_slot] if len(battle.active_pokemon) > 1 else None
         partner_kos_opp = {}   # opponent index -> True if the faster partner's best move KOs it
 
-        
         if partner and not partner.fainted:
-            
+
             partner_is_faster = self.isFaster(pokemon, partner, battle)
 
             for i, opp in enumerate(battle.opponent_active_pokemon):
@@ -38,16 +45,14 @@ class OrderingMixin():
                     best_move_prio = 0
                     for partner_move in battle.available_moves[partner_slot]:
                         partner_dmg = self.calculate_damage(partner, opp, partner_move, battle)
-                        
+
                         if partner_dmg > partner_best_dmg:
                             partner_best_dmg = partner_dmg
                             best_move_prio = partner_move.priority
-                            
+
                     if partner_is_faster or best_move_prio > 0:
                         partner_kos_opp[i] = partner_best_dmg >= (opp.current_hp_fraction * 100)
-        
-        
-        
+
         # Store all scored candidates
         scored_candidates = []
 
@@ -92,7 +97,7 @@ class OrderingMixin():
                             order = self.create_order(move, move_target=target, mega=can_mega)
                             scored_candidates.append({"score": current_score, "order": order, "is_protect": False, "is_mega": can_mega})
 
-                # --- 3. Spread / Multi-Target Moves ---
+            # --- 3. Spread / Multi-Target Moves ---
             elif move.target in NON_SINGLE_TARGET:
                 current_score = 0
 
@@ -153,7 +158,7 @@ class OrderingMixin():
                         # Faster partner's best move likely KOs this target first
                         if partner_kos_opp.get(i):
                             current_score *= 0.35
-                            
+
                         target = i + 1
                         order = self.create_order(move, move_target=target, mega=can_mega)
                         scored_candidates.append({"score": current_score, "order": order, "is_protect": False, "is_mega": can_mega})
@@ -173,6 +178,13 @@ class OrderingMixin():
         if is_going_to_faint or takes_alot_dmg or has_heavy_drops:
             for bench in battle.available_switches[slot_index]:
                 if bench.fainted or bench.current_hp_fraction == 0:
+                    continue
+
+                # Skip if the other slot already committed to switching to this bench mon
+                if (self._switch_lock is not None
+                        and bench.species == self._switch_lock
+                        and self._switch_lock_slot is not None
+                        and self._switch_lock_slot != slot_index):
                     continue
 
                 estimated_dmg = 0
@@ -225,5 +237,18 @@ class OrderingMixin():
         if chosen_candidate["is_mega"]:
             self.mega = True
 
-        print(f"best order is: {chosen_candidate['order']}")
+        # Update switch lock: if we picked a switch, remember it; if we own the lock
+        # but now picked a non-switch, release the lock so the other slot can use it
+        inner_order = chosen_candidate["order"]
+        if hasattr(inner_order, 'order'):
+            inner_order = inner_order.order
+        if isinstance(inner_order, Pokemon):
+            self._switch_lock = inner_order.species
+            self._switch_lock_slot = slot_index
+        elif self._switch_lock_slot == slot_index:
+            self._switch_lock = None
+            self._switch_lock_slot = None
+
+        print(f"Turn: {battle.turn}")
+        print(f"best order is: {pokemon.species} {chosen_candidate['order']}")
         return chosen_candidate["order"]

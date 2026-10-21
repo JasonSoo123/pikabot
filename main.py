@@ -7,7 +7,7 @@ from pikabot.team import EX_VGC_TEAM
 async def main():
     player1 = PikaBot(
         battle_format="gen9championsvgc2026regma",
-        team=EX_VGC_TEAM
+        team=EX_VGC_TEAM,
     )
     
     player2 = RandomPlayer(
