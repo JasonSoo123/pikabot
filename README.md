@@ -4,7 +4,7 @@ A Pokemon VGC (Video Game Championships) doubles battle bot built with [poke-env
 
 ## Features
 
-- **VGC Doubles Battle Logic**: Custom move selection, switching, and team preview strategies
+- **VGC Doubles Battle Logic**: Custom move selection, and switching
 - **Match Telemetry Logging**: Detailed battle logs with turn-by-turn state snapshots
 - **Bot-vs-Bot Self-Play**: Two independent PikaBot instances can battle each other locally
 - **Shared Match Storage**: Both bots write to a single `battle_logs/master.json` file with thread-safe atomic writes
