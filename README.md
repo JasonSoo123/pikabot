@@ -39,7 +39,7 @@ pip install poke-env
 ### Bot vs Bot (Local Self-Play)
 
 ```bash
-cd /Users/jasonsoo/Desktop/JasonsWork/Project/Pokemon
+cd ~
 python3 -m pikabot.main
 ```
 
