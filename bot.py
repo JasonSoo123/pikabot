@@ -29,6 +29,8 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         self.current_match = None
         self.my_last_turn_actions = {}  # Keyed by battle_tag
         self.master_path = "battle_logs/master.json"
+        # Track opponent active pokemon at end of each turn for switch detection
+        self._prev_opp_active = {}  # battle_tag -> list of species
 
         # Load existing matches if master file exists
         if os.path.exists(self.master_path):
@@ -105,10 +107,6 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         # Get the chosen order from the model
         chosen_order = self.select_model_move(battle)
 
-        # Skip logging during force switch (mid-turn replacement)
-        if any(battle.force_switch):
-            return chosen_order
-
         try:
             battle_tag = battle.battle_tag
 
@@ -145,14 +143,38 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
             # Build current turn board state snapshot (for turn N)
             turn_snapshot = self._build_turn_snapshot(battle, last_turn_history)
 
+            # Store opponent active pokemon for switch detection in next turn
+            opp_active_species = []
+            if "opponent_side" in turn_snapshot and "active" in turn_snapshot["opponent_side"]:
+                for opp in turn_snapshot["opponent_side"]["active"]:
+                    if opp and "species" in opp:
+                        opp_active_species.append(opp["species"])
+            self._prev_opp_active[battle_tag] = opp_active_species
+
+            # Handle force_switch: add forced switch actions to my_last_turn_actions
+            # so they become part of the NEXT turn's battle_history
+            if any(battle.force_switch):
+                force_switch_actions = self._order_to_action_strings(chosen_order, battle)
+                # Lowercase all action strings for consistency
+                force_switch_actions = [s.lower() for s in force_switch_actions]
+                # Extend the current my_last_turn_actions with forced switch actions
+                self.my_last_turn_actions[battle_tag].extend(force_switch_actions)
+                # Update target field for current snapshot
+                turn_snapshot["target"] = ", ".join(force_switch_actions)
+                # Append snapshot (with the forced switch in target)
+                self.current_match["turns"].append(turn_snapshot)
+                return chosen_order
+
             # Append snapshot to the current match
             self.current_match["turns"].append(turn_snapshot)
 
             # Save the chosen order so it becomes 'my_action' on the NEXT turn
             action_strings = self._order_to_action_strings(chosen_order, battle)
+            # Lowercase all action strings for consistency
+            action_strings = [s.lower() for s in action_strings]
             self.my_last_turn_actions[battle_tag] = action_strings
-            # Set target_moves to readable string
-            turn_snapshot["target_moves"] = ", ".join(action_strings)
+            # Set target to lowercase string (renamed from target_moves)
+            turn_snapshot["target"] = ", ".join(action_strings)
 
         except Exception as e:
             # Keep logging inside try/except, print one short error line on failure
@@ -382,47 +404,93 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         return turn_snapshot
 
     def _get_opponent_actions(self, battle, turn_number):
-        """Extract opponent actions for the given (just-finished) turn from battle.observations."""
+        """Extract opponent actions for the given (just-finished) turn from battle.observations
+        and from opponent_active_pokemon.last_move as fallback. Also detects switches by
+        comparing with previous turn's active pokemon."""
         opponent_actions = []
+        battle_tag = battle.battle_tag
 
+        # First try: extract from battle.observations (detailed event log)
         observations = getattr(battle, 'observations', None)
-        if not isinstance(observations, dict) or turn_number not in observations:
-            return opponent_actions
+        if isinstance(observations, dict) and turn_number in observations:
+            obs = observations[turn_number]
+            events = getattr(obs, 'events', None)
+            if isinstance(events, list):
+                # Determine the opponent's role ("p1" / "p2")
+                opp_role = getattr(battle, 'opponent_role', None)
+                if opp_role is None:
+                    player_role = getattr(battle, 'player_role', None)
+                    if player_role == "p1":
+                        opp_role = "p2"
+                    elif player_role == "p2":
+                        opp_role = "p1"
 
-        obs = observations[turn_number]
-        events = getattr(obs, 'events', None)
-        if not isinstance(events, list):
-            return opponent_actions
+                if opp_role is not None:
+                    for event in events:
+                        if not isinstance(event, list) or len(event) < 3:
+                            continue
+                        event_type = event[1]
+                        pokemon_str = event[2]  # e.g. "p2a: Incineroar"
+                        if not isinstance(pokemon_str, str) or not pokemon_str.startswith(opp_role):
+                            continue
 
-        # Determine the opponent's role ("p1" / "p2")
-        opp_role = getattr(battle, 'opponent_role', None)
-        if opp_role is None:
-            player_role = getattr(battle, 'player_role', None)
-            if player_role == "p1":
-                opp_role = "p2"
-            elif player_role == "p2":
-                opp_role = "p1"
-        if opp_role is None:
-            return opponent_actions
+                        if event_type == "move":
+                            move_name = event[3] if len(event) > 3 else ""
+                            action = f"{pokemon_str} used {move_name}"
+                            target = event[4] if len(event) > 4 else ""
+                            if target:
+                                action += f" targeting {target}"
+                            opponent_actions.append(action.lower())
 
-        for event in events:
-            if not isinstance(event, list) or len(event) < 3:
-                continue
-            event_type = event[1]
-            pokemon_str = event[2]  # e.g. "p2a: Incineroar"
-            if not isinstance(pokemon_str, str) or not pokemon_str.startswith(opp_role):
-                continue
+                        elif event_type == "switch":
+                            opponent_actions.append(f"{pokemon_str} switched in".lower())
 
-            if event_type == "move":
-                move_name = event[3] if len(event) > 3 else ""
-                action = f"{pokemon_str} used {move_name}"
-                target = event[4] if len(event) > 4 else ""
-                if target:
-                    action += f" targeting {target}"
-                opponent_actions.append(action)
+        # Fallback 1: if observations didn't yield actions, use opponent_active_pokemon.last_move
+        if not opponent_actions and hasattr(battle, 'opponent_active_pokemon'):
+            for i, opp_pokemon in enumerate(battle.opponent_active_pokemon):
+                if opp_pokemon is not None and not opp_pokemon.fainted:
+                    last_move = getattr(opp_pokemon, 'last_move', None)
+                    if last_move is not None:
+                        move_name = getattr(last_move, 'id', str(last_move))
+                        species = opp_pokemon.species if opp_pokemon.species else "Unknown"
+                        # Format similar to our own action strings
+                        action = f"{species} uses {move_name.replace('_', ' ').title()}"
+                        opponent_actions.append(action.lower())
+                    elif opp_pokemon.fainted:
+                        species = opp_pokemon.species if opp_pokemon.species else "Unknown"
+                        opponent_actions.append(f"{species} fainted".lower())
 
-            elif event_type == "switch":
-                opponent_actions.append(f"{pokemon_str} switched in")
+        # Fallback 2: detect switches by comparing with previous turn's active pokemon
+        # Get current active species (at the time this is called - which is start of next turn)
+        current_opp_active = []
+        if hasattr(battle, 'opponent_active_pokemon'):
+            for opp_pokemon in battle.opponent_active_pokemon:
+                if opp_pokemon is not None and opp_pokemon.species:
+                    current_opp_active.append(opp_pokemon.species)
+
+        # Compare with previous turn's active pokemon
+        prev_opp_active = self._prev_opp_active.get(battle_tag, [])
+        if prev_opp_active:
+            # Find pokemon that were in prev but not in current (switched out or fainted)
+            # Find pokemon that are in current but not in prev (switched in)
+            for species in current_opp_active:
+                if species not in prev_opp_active:
+                    # This pokemon was switched in
+                    opponent_actions.append(f"{species} switched in".lower())
+            # Also check for fainted pokemon that were in prev but not in current
+            for species in prev_opp_active:
+                if species not in current_opp_active:
+                    # Check if it's in bench with 0 HP (fainted)
+                    found_in_bench = False
+                    if hasattr(battle, 'opponent_team'):
+                        for p in battle.opponent_team.values():
+                            if p.species == species and p.current_hp_fraction == 0:
+                                found_in_bench = True
+                                break
+                    if found_in_bench:
+                        opponent_actions.append(f"{species} fainted".lower())
+                    else:
+                        opponent_actions.append(f"{species} switched out".lower())
 
         return opponent_actions
 
