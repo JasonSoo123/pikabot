@@ -1,21 +1,21 @@
 import asyncio
 
-from poke_env.player import RandomPlayer
+from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
 from pikabot.bot import PikaBot
 from pikabot.team import EX_VGC_TEAM
 
 async def main():
     player1 = PikaBot(
         battle_format="gen9championsvgc2026regma",
-        team=EX_VGC_TEAM,
+        team=EX_VGC_TEAM
     )
-    
-    player2 = RandomPlayer(
+
+    player2 = PikaBot(
         battle_format="gen9championsvgc2026regma",
         team=EX_VGC_TEAM
     )
 
-    # Set n_battles=1 so you can see it complete a single match
+    # Run direct battles (no server needed)
     await player1.battle_against(player2, n_battles=1)
 
 if __name__ == "__main__":

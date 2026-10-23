@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import threading
 from poke_env.player import Player, RandomPlayer
 from poke_env.player.battle_order import DoubleBattleOrder
 from pikabot.mixins.opponent_tracker import OpponentTrackerMixin
@@ -10,6 +11,13 @@ from pikabot.mixins.damage import DamageMixin
 from pikabot.mixins.status_moves import StatusMoveMixin
 from pikabot.mixins.ordering import OrderingMixin
 from pikabot.mixins.switching import SwitchingMixin
+
+
+# Shared lock for thread-safe file writes to master.json
+_master_file_lock = threading.Lock()
+
+# Shared master path - both bots write to the same file
+_SHARED_MASTER_PATH = os.path.join("battle_logs", "master.json")
 
 
 class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, StatusMoveMixin, OrderingMixin, SwitchingMixin, Player):
@@ -24,15 +32,17 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         self.item_used = [False, False]
         self.last_moved_used = [None, None]
 
-        # Match logging attributes
+        # Match logging attributes - instance-level for isolation during battle
         self.all_matches = []
         self.current_match = None
         self.my_last_turn_actions = {}  # Keyed by battle_tag
-        self.master_path = "battle_logs/master.json"
-        # Track opponent active pokemon at end of each turn for switch detection
         self._prev_opp_active = {}  # battle_tag -> list of species
+        self._session_match_count = 0  # Track matches added in current session
 
-        # Load existing matches if master file exists
+        # Use shared master path for bot-vs-bot (both instances write to same file)
+        self.master_path = _SHARED_MASTER_PATH
+
+        # Load existing matches if master file exists (for resume capability)
         if os.path.exists(self.master_path):
             try:
                 with open(self.master_path, 'r') as f:
@@ -43,144 +53,49 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                 os.rename(self.master_path, self.master_path + ".bak")
                 self.all_matches = []
 
-    def select_model_move(self, battle):
-        # Update clam bot data on opponnent
-        self.update_opponent_knowledge(battle)
+    def _write_master_file(self):
+        """Write all matches to the shared master JSON file using thread-safe read-merge-write."""
+        with _master_file_lock:
+            try:
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(self.master_path), exist_ok=True)
 
-        # Light check for item used
-        for index, pokemon in enumerate(battle.active_pokemon):
-            if pokemon is not None and pokemon.item is None:
-                self.item_used[index] = True
-            else:
-                self.item_used[index] = False
+                # Read current file to get latest matches from other bot
+                current_matches = []
+                if os.path.exists(self.master_path):
+                    try:
+                        with open(self.master_path, 'r') as f:
+                            data = json.load(f)
+                            current_matches = data.get("matches", [])
+                    except (json.JSONDecodeError, KeyError):
+                        current_matches = []
 
-        # If there is a force switch
-        if any(battle.force_switch):
-            left_switch = None
-            right_switch = None
+                # Merge our matches with existing (avoid duplicates by match_uid)
+                existing_uids = {m.get("match_uid") for m in current_matches if m.get("match_uid")}
+                for match in self.all_matches:
+                    if match.get("match_uid") not in existing_uids:
+                        current_matches.append(match)
 
-            # Double forced switch
-            if battle.force_switch[0] and battle.force_switch[1]:
+                # Prepare data
+                data = {"matches": current_matches}
 
-                best_left_mon = self.choose_best_switch(0, battle)
-                best_right_mon = self.choose_best_switch(1, battle, exclude_mon=best_left_mon)
+                # Write to temp file first
+                temp_path = self.master_path + ".tmp"
+                with open(temp_path, 'w') as f:
+                    json.dump(data, f, indent=2)
 
-                if best_left_mon:
-                    left_switch = self.create_order(best_left_mon)
-                if best_right_mon:
-                    right_switch = self.create_order(best_right_mon)
+                # Atomic replace
+                os.replace(temp_path, self.master_path)
 
-                if left_switch and right_switch:
-                    return DoubleBattleOrder(left_switch, right_switch)
-                elif left_switch:
-                    return left_switch
-                elif right_switch:
-                    return right_switch
-
-            # Left forced switch
-            elif battle.force_switch[0]:
-                best_left_mon = self.choose_best_switch(0, battle)
-                if best_left_mon:
-                    return self.create_order(best_left_mon)
-
-            # Right forced switch
-            elif battle.force_switch[1]:
-                best_right_mon = self.choose_best_switch(1, battle)
-                if best_right_mon:
-                    return self.create_order(best_right_mon)
-
-        if battle.available_moves[0] and battle.available_moves[1]:
-
-            left_order, right_order = self.choose_best_double_order(battle)
-
-            if left_order is not None and right_order is not None:
-                return DoubleBattleOrder(left_order, right_order)
-            elif left_order is not None:
-                return left_order
-            elif right_order is not None:
-                return right_order
-            else:
-                print("random move")
-                return self.choose_random_doubles_move(battle)
-
-    def choose_move(self, battle):
-        # Get the chosen order from the model
-        chosen_order = self.select_model_move(battle)
-
-        try:
-            battle_tag = battle.battle_tag
-
-            # Initialize match container if it's a new game or safety net for unfinished match
-            if self.current_match is None or self.current_match["match_id"] != battle_tag:
-                # Safety net: if current_match exists but is for a different battle, save it first
-                if self.current_match is not None:
-                    self.all_matches.append(self.current_match)
-                    self._write_master_file()
-
-                # Start new match
-                self.current_match = {
-                    "match_id": battle_tag,
-                    "match_uid": str(uuid.uuid4()),
-                    "player_username": battle.player_username,
-                    "opponent_username": battle.opponent_username,
-                    "match_outcome": None,
-                    "total_turns": None,
-                    "turns": []
-                }
-                self.my_last_turn_actions[battle_tag] = []
-
-            # Build history for the turn that JUST finished (turn N-1)
-            last_turn_number = battle.turn - 1
-            if last_turn_number >= 1:
-                last_turn_history = {
-                    "turn_number": last_turn_number,
-                    "my_action": self.my_last_turn_actions.get(battle_tag, []),
-                    "opponent_action": self._get_opponent_actions(battle, last_turn_number)
-                }
-            else:
-                last_turn_history = {}
-
-            # Build current turn board state snapshot (for turn N)
-            turn_snapshot = self._build_turn_snapshot(battle, last_turn_history)
-
-            # Store opponent active pokemon for switch detection in next turn
-            opp_active_species = []
-            if "opponent_side" in turn_snapshot and "active" in turn_snapshot["opponent_side"]:
-                for opp in turn_snapshot["opponent_side"]["active"]:
-                    if opp and "species" in opp:
-                        opp_active_species.append(opp["species"])
-            self._prev_opp_active[battle_tag] = opp_active_species
-
-            # Handle force_switch: add forced switch actions to my_last_turn_actions
-            # so they become part of the NEXT turn's battle_history
-            if any(battle.force_switch):
-                force_switch_actions = self._order_to_action_strings(chosen_order, battle)
-                # Lowercase all action strings for consistency
-                force_switch_actions = [s.lower() for s in force_switch_actions]
-                # Extend the current my_last_turn_actions with forced switch actions
-                self.my_last_turn_actions[battle_tag].extend(force_switch_actions)
-                # Update target field for current snapshot
-                turn_snapshot["target"] = ", ".join(force_switch_actions)
-                # Append snapshot (with the forced switch in target)
-                self.current_match["turns"].append(turn_snapshot)
-                return chosen_order
-
-            # Append snapshot to the current match
-            self.current_match["turns"].append(turn_snapshot)
-
-            # Save the chosen order so it becomes 'my_action' on the NEXT turn
-            action_strings = self._order_to_action_strings(chosen_order, battle)
-            # Lowercase all action strings for consistency
-            action_strings = [s.lower() for s in action_strings]
-            self.my_last_turn_actions[battle_tag] = action_strings
-            # Set target to lowercase string (renamed from target_moves)
-            turn_snapshot["target"] = ", ".join(action_strings)
-
-        except Exception as e:
-            # Keep logging inside try/except, print one short error line on failure
-            print(f"Logging error: {e}")
-
-        return chosen_order
+            except Exception as e:
+                print(f"Error writing master file: {e}")
+                # Clean up temp file if it exists
+                temp_path = self.master_path + ".tmp"
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except:
+                        pass
 
     def _battle_finished_callback(self, battle):
         # Call super() first if it exists
@@ -206,12 +121,13 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                 match_uid = self.current_match["match_uid"]
                 if not any(match.get("match_uid") == match_uid for match in self.all_matches):
                     self.all_matches.append(self.current_match)
+                    self._session_match_count += 1
 
-                # Write all matches to master file
+                # Write all matches to shared master file (thread-safe)
                 self._write_master_file()
 
                 # Print confirmation
-                print(f"saved match {match_uid[:8]} ({len(self.all_matches)} matches total)")
+                print(f"saved match {match_uid[:8]} ({self._session_match_count} matches total for {self.username})")
 
                 # Reset current match
                 self.current_match = None
@@ -578,35 +494,152 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
             order_str = str(order)
             # If it looks like a raw pokemon showdown command, try to make it nicer
             if order_str.startswith('/choose ') or '|' in order_str:
-                return f"Pokemon action {index}"  # Generic fallback
+                return f"pokemon action {index}"  # Generic fallback
             return order_str
 
-    def _write_master_file(self):
-        """Write all matches to the master JSON file using temp file + os.replace for safety."""
+    def choose_move(self, battle):
+        # Update clam bot data on opponnent
+        self.update_opponent_knowledge(battle)
+
+        # Light check for item used
+        for index, pokemon in enumerate(battle.active_pokemon):
+            if pokemon is not None and pokemon.item is None:
+                self.item_used[index] = True
+            else:
+                self.item_used[index] = False
+
+        # If there is a force switch
+        if any(battle.force_switch):
+            left_switch = None
+            right_switch = None
+
+            # Double forced switch
+            if battle.force_switch[0] and battle.force_switch[1]:
+
+                best_left_mon = self.choose_best_switch(0, battle)
+                best_right_mon = self.choose_best_switch(1, battle, exclude_mon=best_left_mon)
+
+                if best_left_mon:
+                    left_switch = self.create_order(best_left_mon)
+                if best_right_mon:
+                    right_switch = self.create_order(best_right_mon)
+
+                if left_switch and right_switch:
+                    chosen_order = DoubleBattleOrder(left_switch, right_switch)
+                elif left_switch:
+                    chosen_order = left_switch
+                elif right_switch:
+                    chosen_order = right_switch
+                else:
+                    chosen_order = self.choose_random_doubles_move(battle)
+            # Left forced switch
+            elif battle.force_switch[0]:
+                best_left_mon = self.choose_best_switch(0, battle)
+                if best_left_mon:
+                    chosen_order = self.create_order(best_left_mon)
+                else:
+                    chosen_order = self.choose_random_doubles_move(battle)
+            # Right forced switch
+            elif battle.force_switch[1]:
+                best_right_mon = self.choose_best_switch(1, battle)
+                if best_right_mon:
+                    chosen_order = self.create_order(best_right_mon)
+                else:
+                    chosen_order = self.choose_random_doubles_move(battle)
+        else:
+            if battle.available_moves[0] and battle.available_moves[1]:
+
+                left_order = self.choose_best_order(battle.active_pokemon[0], battle, battle.available_moves[0])
+                right_order = self.choose_best_order(battle.active_pokemon[1], battle, battle.available_moves[1])
+
+                chosen_order = DoubleBattleOrder(left_order, right_order)
+
+            elif battle.available_moves[0]:
+                chosen_order = self.choose_best_order(battle.active_pokemon[0], battle, battle.available_moves[0])
+
+            elif battle.available_moves[1]:
+                chosen_order = self.choose_best_order(battle.active_pokemon[1], battle, battle.available_moves[1])
+
+            # Fallback to random selection
+            else:
+                print("random move")
+                chosen_order = self.choose_random_doubles_move(battle)
+
+        # --- Battle logging ---
         try:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(self.master_path), exist_ok=True)
+            battle_tag = battle.battle_tag
 
-            # Prepare data
-            data = {"matches": self.all_matches}
+            # Initialize match container if it's a new game or safety net for unfinished match
+            if self.current_match is None or self.current_match["match_id"] != battle_tag:
+                # Safety net: if current_match exists but is for a different battle, save it first
+                if self.current_match is not None:
+                    self.all_matches.append(self.current_match)
+                    self._write_master_file()
 
-            # Write to temp file first
-            temp_path = self.master_path + ".tmp"
-            with open(temp_path, 'w') as f:
-                json.dump(data, f, indent=2)
+                # Start new match
+                self.current_match = {
+                    "match_id": battle_tag,
+                    "match_uid": str(uuid.uuid4()),
+                    "player_username": battle.player_username,
+                    "opponent_username": battle.opponent_username,
+                    "match_outcome": None,
+                    "total_turns": None,
+                    "turns": []
+                }
+                self.my_last_turn_actions[battle_tag] = []
 
-            # Atomic replace
-            os.replace(temp_path, self.master_path)
+            # Build history for the turn that JUST finished (turn N-1)
+            last_turn_number = battle.turn - 1
+            if last_turn_number >= 1:
+                last_turn_history = {
+                    "turn_number": last_turn_number,
+                    "my_action": self.my_last_turn_actions.get(battle_tag, []),
+                    "opponent_action": self._get_opponent_actions(battle, last_turn_number)
+                }
+            else:
+                last_turn_history = {}
+
+            # Build current turn board state snapshot (for turn N)
+            turn_snapshot = self._build_turn_snapshot(battle, last_turn_history)
+
+            # Store opponent active pokemon for switch detection in next turn
+            opp_active_species = []
+            if "opponent_side" in turn_snapshot and "active" in turn_snapshot["opponent_side"]:
+                for opp in turn_snapshot["opponent_side"]["active"]:
+                    if opp and "species" in opp:
+                        opp_active_species.append(opp["species"])
+            self._prev_opp_active[battle_tag] = opp_active_species
+
+            # Handle force_switch: add forced switch actions to my_last_turn_actions
+            # so they become part of the NEXT turn's battle_history
+            if any(battle.force_switch):
+                force_switch_actions = self._order_to_action_strings(chosen_order, battle)
+                # Lowercase all action strings for consistency
+                force_switch_actions = [s.lower() for s in force_switch_actions]
+                # Extend the current my_last_turn_actions with forced switch actions
+                self.my_last_turn_actions[battle_tag].extend(force_switch_actions)
+                # Update target field for current snapshot
+                turn_snapshot["target"] = ", ".join(force_switch_actions)
+                # Append snapshot (with the forced switch in target)
+                self.current_match["turns"].append(turn_snapshot)
+                return chosen_order
+
+            # Append snapshot to the current match
+            self.current_match["turns"].append(turn_snapshot)
+
+            # Save the chosen order so it becomes 'my_action' on the NEXT turn
+            action_strings = self._order_to_action_strings(chosen_order, battle)
+            # Lowercase all action strings for consistency
+            action_strings = [s.lower() for s in action_strings]
+            self.my_last_turn_actions[battle_tag] = action_strings
+            # Set target to lowercase string (renamed from target_moves)
+            turn_snapshot["target"] = ", ".join(action_strings)
 
         except Exception as e:
-            print(f"Error writing master file: {e}")
-            # Clean up temp file if it exists
-            temp_path = self.master_path + ".tmp"
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
+            # Keep logging inside try/except, print one short error line on failure
+            print(f"Logging error: {e}")
+
+        return chosen_order
 
     def teampreview(self, battle):
         return self.random_teampreview(battle)

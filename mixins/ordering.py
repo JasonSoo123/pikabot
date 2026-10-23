@@ -3,6 +3,7 @@ import numpy as np
 import random
 from poke_env.battle.move_category import MoveCategory
 from poke_env.battle.field import Field
+from poke_env.battle.effect import Effect
 from poke_env.player.battle_order import Pokemon, Move
 from pikabot.constants import PROTECT_MOVES, NON_SINGLE_TARGET, SELF_OR_ALLY_TARGETS
 
@@ -220,8 +221,10 @@ class OrderingMixin():
         negative_boost_total = sum(
             -pokemon.boosts.get(stat, 0) for stat in boost_stats if pokemon.boosts.get(stat, 0) < 0)
         has_heavy_drops = negative_boost_total >= 2
-
-        if is_going_to_faint or takes_alot_dmg or has_heavy_drops:
+        
+        effected = any(eff in pokemon.effects for eff in [Effect.TAUNT, Effect.ENCORE, Effect.IMPRISON])
+        
+        if is_going_to_faint or takes_alot_dmg or has_heavy_drops or effected:
             for bench in battle.available_switches[slot_index]:
                 if bench.fainted or bench.current_hp_fraction == 0:
                     continue
@@ -234,6 +237,8 @@ class OrderingMixin():
                     switch_score += 30
                 if is_going_to_faint:
                     switch_score += 100
+                if effected:
+                    switch_score += 60
                 switch_score += negative_boost_total * 25
                 order = self.create_order(bench)
                 scored_candidates.append({"score": switch_score, "order": order,
