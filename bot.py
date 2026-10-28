@@ -41,6 +41,7 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         self._session_match_count = 0  # Track matches added in current session
         # Duplicate switch tracking now done by checking current_match["turns"] directly
         self._logged_move_turns = set()  # Track (battle_tag, turn_number) to prevent duplicate move entries
+        self._logged_pivot_switches = set()  # Track (battle_tag, turn_number, pivot_key) to prevent duplicate pivot switch entries
 
         # Use shared master path for bot-vs-bot (both instances write to same file)
         self.master_path = _SHARED_MASTER_PATH
@@ -468,6 +469,15 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
             pokemon = battle.active_pokemon[index] if index < len(battle.active_pokemon) else None
             species = pokemon.species if pokemon and pokemon.species else "unknown"
 
+            # If species unknown, try to infer from move ownership
+            if species == "unknown":
+                move_id = getattr(move, 'id', None)
+                if move_id is not None:
+                    for p in battle.active_pokemon:
+                        if p and hasattr(p, 'moves') and move_id in p.moves:
+                            species = p.species if p.species else "unknown"
+                            break
+
             # Get move name - try to get the id, otherwise use the name
             move_name = getattr(move, 'id', None)
             if move_name is None:
@@ -564,11 +574,16 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                     chosen_order = self.choose_random_doubles_move(battle)
         else:
             if battle.available_moves[0] and battle.available_moves[1]:
-
-                left_order = self.choose_best_order(battle.active_pokemon[0], battle, battle.available_moves[0])
-                right_order = self.choose_best_order(battle.active_pokemon[1], battle, battle.available_moves[1])
-
-                chosen_order = DoubleBattleOrder(left_order, right_order)
+                # Use choose_best_double_order for proper pair legality & synergy
+                left_order, right_order = self.choose_best_double_order(battle)
+                if left_order is not None and right_order is not None:
+                    chosen_order = DoubleBattleOrder(left_order, right_order)
+                elif left_order is not None:
+                    chosen_order = left_order
+                elif right_order is not None:
+                    chosen_order = right_order
+                else:
+                    chosen_order = self.choose_random_doubles_move(battle)
 
             elif battle.available_moves[0]:
                 chosen_order = self.choose_best_order(battle.active_pokemon[0], battle, battle.available_moves[0])
@@ -605,6 +620,10 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                 self.my_last_turn_actions[battle_tag] = []
                 self._current_turn_planned[battle_tag] = []
                 self._logged_move_turns.discard((battle_tag, battle.turn))  # Clear for new match
+                # Clear pivot switch tracking for this battle
+                keys_to_remove = [k for k in self._logged_pivot_switches if k[0] == battle_tag]
+                for k in keys_to_remove:
+                    self._logged_pivot_switches.discard(k)
 
             # Build history for the turn that JUST finished (turn N-1)
             last_turn_number = battle.turn - 1
@@ -673,42 +692,54 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                         pivot_switch_slots.append(slot_num)
                         pivot_switch_target_moves.append(switch_str)
 
-                # Handle pivot slots: append to previous move turn's target_moves and my_action
+                # Handle pivot slots: append to previous move turn's following_moves and my_action
                 if pivot_switch_target_moves:
-                    # Find the last move turn in current_match to append pivot replacements
-                    last_move_turn = None
-                    for turn in reversed(self.current_match.get("turns", [])):
-                        if turn.get("turn_type") == "move":
-                            last_move_turn = turn
-                            break
+                    # Create a unique key for this pivot switch combination
+                    pivot_key = tuple(sorted(pivot_switch_target_moves))
+                    pivot_dedup_key = (battle_tag, battle.turn, pivot_key)
 
-                    if last_move_turn is not None:
-                        # Append pivot replacements to the move turn's target_moves
-                        current_target_moves = last_move_turn.get("target_moves", "")
-                        if current_target_moves:
-                            last_move_turn["target_moves"] = current_target_moves + ", " + ", ".join(pivot_switch_target_moves)
-                        else:
-                            last_move_turn["target_moves"] = ", ".join(pivot_switch_target_moves)
+                    # Skip if already logged
+                    if pivot_dedup_key in self._logged_pivot_switches:
+                        pass  # Already logged, skip
+                    else:
+                        self._logged_pivot_switches.add(pivot_dedup_key)
 
-                        # Also append to the my_action history for that turn (stored in my_last_turn_actions)
-                        # This will be used for the next turn's battle_history
-                        my_actions = self.my_last_turn_actions.get(battle_tag, [])
-                        my_actions.extend([s.lower() for s in pivot_switch_target_moves])
-                        self.my_last_turn_actions[battle_tag] = my_actions
+                        # Find the last move turn in current_match to append pivot replacements
+                        # Only consider turns with turn_number < battle.turn (previous turns)
+                        # because choose_move can be called twice per turn in local battles
+                        last_move_turn = None
+                        for turn in reversed(self.current_match.get("turns", [])):
+                            # Any turn without turn_type is a valid turn (we removed turn_type)
+                            if "target_orders" in turn and turn.get("turn_number", 0) < battle.turn:
+                                last_move_turn = turn
+                                break
 
-                        # Also update the last_turn_history that was just built for this turn's battle_history
-                        if last_turn_history and "my_action" in last_turn_history:
-                            last_turn_history["my_action"].extend([s.lower() for s in pivot_switch_target_moves])
+                        if last_move_turn is not None:
+                            # Initialize following_moves if not present
+                            if "following_moves" not in last_move_turn:
+                                last_move_turn["following_moves"] = []
 
-                # Handle death slots: create switch entry if any
+                            # Append pivot replacements to the move turn's following_moves
+                            last_move_turn["following_moves"].extend([s.lower() for s in pivot_switch_target_moves])
+
+                            # Also append to the my_action history for that turn (stored in my_last_turn_actions)
+                            # This will be used for the next turn's battle_history
+                            my_actions = self.my_last_turn_actions.get(battle_tag, [])
+                            my_actions.extend([s.lower() for s in pivot_switch_target_moves])
+                            self.my_last_turn_actions[battle_tag] = my_actions
+
+                            # Also update the last_turn_history that was just built for this turn's battle_history
+                            if last_turn_history and "my_action" in last_turn_history:
+                                last_turn_history["my_action"].extend([s.lower() for s in pivot_switch_target_moves])
+
+                # Handle death slots: create turn entry with target_orders/following_moves
                 if death_switch_target_moves:
                     # Deduplicate by checking existing turns in current match
                     turn_num = battle.turn
                     slots_tuple = tuple(death_switch_slots)
                     already_logged = False
                     for existing_turn in self.current_match.get("turns", []):
-                        if (existing_turn.get("turn_type") == "switch" and
-                            existing_turn.get("turn_number") == turn_num and
+                        if (existing_turn.get("turn_number") == turn_num and
                             tuple(existing_turn.get("switch_slots", [])) == slots_tuple):
                             already_logged = True
                             break
@@ -716,16 +747,20 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                     if already_logged:
                         return chosen_order
 
+                    # New schema: target_orders = all initial switches (up to 2), following_moves = rest
+                    switch_target_orders = [s.lower() for s in death_switch_target_moves[:2]] if death_switch_target_moves else []
+                    switch_following = [s.lower() for s in death_switch_target_moves[2:]] if len(death_switch_target_moves) > 2 else []
+
                     switch_snapshot = {
                         "turn_number": battle.turn,
-                        "turn_type": "switch",
                         "switch_slots": death_switch_slots,
                         "switch_reasons": death_switch_reasons,
                         "field": turn_snapshot["field"],
                         "battle_history": turn_snapshot["battle_history"],
                         "my_side": turn_snapshot["my_side"],
                         "opponent_side": turn_snapshot["opponent_side"],
-                        "target_moves": ", ".join(death_switch_target_moves)
+                        "target_orders": switch_target_orders,
+                        "following_moves": switch_following
                     }
 
                     # Get the planned actions for this turn (stored when move turn was logged)
@@ -743,7 +778,6 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
                 return chosen_order
 
             # Normal move turn (no force switch) - log the planned moves
-            turn_snapshot["turn_type"] = "move"
 
             # Check if we've already logged a move turn for this battle turn
             move_key = (battle_tag, battle.turn)
@@ -760,7 +794,9 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
             # Save for NEXT turn's battle_history
             self.my_last_turn_actions[battle_tag] = action_strings
 
-            turn_snapshot["target_moves"] = ", ".join(action_strings)
+            # New schema: target_orders = max 2 initial orders, following_moves = rest
+            turn_snapshot["target_orders"] = action_strings[:2]
+            turn_snapshot["following_moves"] = action_strings[2:] if len(action_strings) > 2 else []
 
             # Append snapshot to the current match
             self.current_match["turns"].append(turn_snapshot)
