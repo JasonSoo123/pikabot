@@ -15,7 +15,7 @@ if (today.getMonth() === 0) {
 }
 // 3. Set the current format
 const POKEMON_GENERATION = 'gen9';
-const POKEMON_REGULATION = 'ma';
+const POKEMON_REGULATION = 'mc';
 
 // 4. Get the url and save it locally in champions-vgc-stats.json
 const URL = `https://smogon.com/stats/${year}-${month}/chaos/${POKEMON_GENERATION}championsvgc${year}reg${POKEMON_REGULATION}-1630.json`;

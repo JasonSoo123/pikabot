@@ -6,12 +6,12 @@ from pikabot.team import EX_VGC_TEAM
 
 async def main():
     player1 = PikaBot(
-        battle_format="gen9championsvgc2026regma",
+        battle_format="gen9championsvgc2026regmc",
         team=EX_VGC_TEAM
     )
 
     player2 = PikaBot(
-        battle_format="gen9championsvgc2026regma",
+        battle_format="gen9championsvgc2026regmc",
         team=EX_VGC_TEAM
     )
 

@@ -188,6 +188,9 @@ def scrape_top_50_vgc():
                         name += '-Aqua'
                     else:
                         name += '-Blaze'
+            elif "Female" in name:
+                name = name.split()[-1]
+                name += '-F'
                         
             evs_array = get_pokemon_evs(pokemon=name, nature=nature, item=item)
             
