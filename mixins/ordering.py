@@ -234,11 +234,11 @@ class OrderingMixin():
                         most_threat_opp, bench, most_threatning_move, battle)
                 switch_score = (bench.current_hp_fraction * 100) - estimated_dmg
                 if self.protect_last_turn[slot_index]:
-                    switch_score += 30
+                    switch_score += 55
                 if is_going_to_faint:
                     switch_score += 100
                 if effected:
-                    switch_score += 60
+                    switch_score += 30
                 switch_score += negative_boost_total * 25
                 order = self.create_order(bench)
                 scored_candidates.append({"score": switch_score, "order": order,

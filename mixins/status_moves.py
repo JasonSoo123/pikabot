@@ -465,7 +465,7 @@ class StatusMoveMixin:
 
                 # Check if last move is not in SETUP_MOVES and not in PROTECT_MOVES
                 last_move_id = target.last_move.id
-                if last_move_id not in SETUP_MOVES and last_move_id not in PROTECT_MOVES:
+                if last_move_id not in SETUP_MOVES and last_move_id not in PROTECT_MOVES and last_move_id != "fakeout":
                     return 0
 
                 # Otherwise, calculate HIGH score
