@@ -54,6 +54,6 @@ class SpeedMixin:
         
         # Check for trickroom speed order reverses
         if Field.TRICK_ROOM in battle.fields:
-            return my_speed < opp_speed
+            return my_speed <= opp_speed
         else:
-            return my_speed > opp_speed
+            return my_speed >= opp_speed

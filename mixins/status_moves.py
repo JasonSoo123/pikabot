@@ -5,7 +5,7 @@ from poke_env.battle.field import Field
 from poke_env.battle.target import Target
 from poke_env.battle.effect import Effect
 from poke_env.battle.move_category import MoveCategory
-import math
+from poke_env.battle.move import Move
 from pikabot.constants import SETUP_MOVES, POWDER_MOVES, PROTECT_MOVES
 from pikabot.data_loader import trickroom_pokemon, tailwind_pokemon
 
@@ -55,13 +55,34 @@ class StatusMoveMixin:
             stats_boosted = SETUP_MOVES[move.id]
 
             # Check if ALL stats this move boosts are already at +4 or higher
-            
+
             if all(my_pokemon.boosts.get(stat, 0) >= 4 for stat in stats_boosted):
                 return 0     # Don't use it if we are already fully boosted
 
-            score += 50
-            if my_pokemon.current_hp_fraction > 0.5:
+            # Base score for setup
+            score += 70  # Increased from 50: setup is high-value in VGC
+
+            # Bonus for boosting multiple stats (Dragon Dance, Quiver Dance, Calm Mind)
+            if len(stats_boosted) >= 2:
+                score += 30
+            if len(stats_boosted) >= 3:
                 score += 20
+
+            # Bonus if we have good HP to survive setup turn
+            if my_pokemon.current_hp_fraction > 0.6:
+                score += 25  # Increased from 20
+            elif my_pokemon.current_hp_fraction > 0.4:
+                score += 10
+
+            # Bonus if partner can protect / redirect
+            if partner and not partner.fainted:
+                partner_has_protect = any(m.id in PROTECT_MOVES for m in battle.available_moves[partner_slot])
+                partner_has_redirect = any(m.id in ["followme", "ragepowder"] for m in battle.available_moves[partner_slot])
+                if partner_has_protect or partner_has_redirect:
+                    score += 20  # Partner can enable setup
+
+            # Penalty if opponent has Taunt / Encore / Haze / Clear Smog users
+            # (This is handled by opp tracking, but we can check known movepool)
 
             return score
 
@@ -70,24 +91,46 @@ class StatusMoveMixin:
             # dont use tailwind if it is already active or trickroom is active
             if SideCondition.TAILWIND in battle.side_conditions or Field.TRICK_ROOM in battle.fields:
                 return 0
-            score += 140
+
+            # Tailwind is premium speed control in VGC
+            score += 180  # Increased from 140: Tailwind is often game-winning
+
+            # Extra value if we have slow, powerful partners that benefit
+            if partner and not partner.fainted:
+                partner_speed = self.get_stat(partner, "spe")
+                opp_speeds = [self.get_stat(o, "spe") for o in battle.opponent_active_pokemon if o and not o.fainted]
+                if opp_speeds and partner_speed < min(opp_speeds):
+                    score += 40  # Partner is slower than both foes - huge benefit
+                elif opp_speeds and partner_speed < max(opp_speeds):
+                    score += 20  # Partner slower than one foe
+
+            # Bonus if we're faster and can set it before opponent moves
+            faster_count = sum(1 for o in battle.opponent_active_pokemon if o and not o.fainted and self.isFaster(my_pokemon, o, battle))
+            if faster_count >= 1:
+                score += 30  # Can set Tailwind immediately
 
         elif move.id in ["reflect", "lightscreen", "auroraveil"]:
 
             if  move.id == "auroraveil":
-                if battle.weather not in Weather.SNOW and battle.weather not in Weather.SNOWSCAPE:
+                if Weather.SNOW not in battle.weather and Weather.SNOWSCAPE not in battle.weather:
                     return 0
                 if SideCondition.AURORA_VEIL in battle.side_conditions:
                     return 0
-                score += 110
+                score += 140  # Increased from 110: Aurora Veil covers both defenses
             elif move.id == "lightscreen":
                 if SideCondition.LIGHT_SCREEN in battle.side_conditions:
                     return 0
-                score += 80
+                score += 100  # Increased from 80
             else:
                 if SideCondition.REFLECT in battle.side_conditions:
                     return 0
-                score += 80
+                score += 100  # Increased from 80
+
+            # Screens more valuable with setup sweepers
+            if partner and not partner.fainted:
+                partner_has_setup = any(m.id in SETUP_MOVES for m in battle.available_moves[partner_slot])
+                if partner_has_setup:
+                    score += 30
 
         elif move.id in ["followme", "ragepowder"]:
 
@@ -102,29 +145,59 @@ class StatusMoveMixin:
                     if all_opponents_grass:
                         return 0
 
-                if self.calc_defensive_score(partner, battle) > 30:
-                    score += 145
+                # Base value: redirecting attacks to bulky mon
+                if self.calc_defensive_score(partner, battle)[0] > 30:
+                    score += 180  # Increased from 145
 
-                if (partner.current_hp_fraction * 100) < 50:
-                    score += 30
+                # More valuable if partner is frail but threatening
+                partner_hp_pct = partner.current_hp_fraction * 100
+                partner_offense = max(self.get_stat(partner, "atk"), self.get_stat(partner, "spa"))
+                if partner_hp_pct < 60 and partner_offense > 150:
+                    score += 50  # Protecting a glass cannon
+                elif partner_hp_pct < 50:
+                    score += 30  # Original bonus
 
+                # Valuable if we're about to faint (last stand redirect)
                 if is_going_to_faint:
-                    score += 30
+                    score += 40  # Increased from 30
+
+                # Bonus if partner has setup moves
+                partner_has_setup = any(m.id in SETUP_MOVES for m in battle.available_moves[partner_slot])
+                if partner_has_setup:
+                    score += 35  # Enable partner setup
 
             return score
 
         elif move.id == "helpinghand":
             if partner and not partner.fainted:
-                score = 0
+                # Find partner's best damaging move
+                best_dmg = 0
                 for moves in battle.available_moves[partner_slot]:
                     for opp in battle.opponent_active_pokemon:
-                        current_score = self.calculate_damage(partner, opp, moves, battle)
-                        if current_score > score:
-                            score = current_score
+                        if opp is not None and not opp.fainted:
+                            current_score = self.calculate_damage(partner, opp, moves, battle)
+                            if current_score > best_dmg:
+                                best_dmg = current_score
 
-                score *= 1.5
-                score -= 15
-                return score
+                if best_dmg > 0:
+                    score = best_dmg * 1.8  # Increased from 1.5: Helping Hand = 1.5x damage, so value scales with damage
+
+                    # Massive bonus if Helping Hand secures a KO that wasn't possible before
+                    for opp in battle.opponent_active_pokemon:
+                        if opp is not None and not opp.fainted:
+                            opp_hp_pct = opp.current_hp_fraction * 100
+                            if best_dmg < opp_hp_pct <= best_dmg * 1.5:  # HH turns non-KO into KO
+                                score += 120  # KO-securing HH is premium
+                                break
+
+                    # Bonus if partner is faster (guaranteed hit)
+                    if self.isFaster(partner, battle.opponent_active_pokemon[0], battle):
+                        score += 20
+
+                    # Small penalty since HH user does nothing this turn
+                    score -= 10  # Reduced from 15
+
+                    return score
 
             return 0
 
@@ -139,31 +212,91 @@ class StatusMoveMixin:
             if weather_map[move.id] in battle.weather:
                 return 0 # Weather is already active
 
-            score += 50
+            score += 80  # Increased from 50: weather setting is valuable
 
             if partner and not partner.fainted:
-                score += 50
+                # Check if partner benefits from this weather
+                partner_ability = self.get_ability(partner)
+                weather_enum = weather_map[move.id]
+
+                benefits = False
+                if weather_enum == Weather.RAINDANCE and partner_ability in ["swiftswim", "dryskin", "raindish", "waterabsorb", "hydration"]:
+                    benefits = True
+                elif weather_enum == Weather.SUNNYDAY and partner_ability in ["chlorophyll", "solarpower", "flowergift", "harvest", "leafguard"]:
+                    benefits = True
+                elif weather_enum == Weather.SANDSTORM and partner_ability in ["sandrush", "sandforce", "sandveil", "overcoat", "magicguard"]:
+                    benefits = True
+                elif weather_enum == Weather.SNOWSCAPE and partner_ability in ["slushrush", "icebody", "snowcloak", "iceface"]:
+                    benefits = True
+
+                # Also check for weather-boosted moves
+                for m in battle.available_moves[partner_slot]:
+                    if weather_enum == Weather.RAINDANCE and m.type == PokemonType.WATER:
+                        benefits = True
+                    elif weather_enum == Weather.SUNNYDAY and m.type == PokemonType.FIRE:
+                        benefits = True
+                    elif weather_enum == Weather.SANDSTORM and m.type in [PokemonType.ROCK, PokemonType.GROUND, PokemonType.STEEL]:
+                        benefits = True
+                    elif weather_enum == Weather.SNOWSCAPE and m.type == PokemonType.ICE:
+                        benefits = True
+
+                if benefits:
+                    score += 80  # Increased from 50: weather synergy is huge
 
             if battle.weather:
-                score += 100
+                score += 100  # Overwriting opponent's weather is valuable
 
             return score
 
         elif move.id in ["recover", "roost", "slackoff", "softboiled", "morningsun", "synthesis", "moonlight"]:
-            if my_pokemon.current_hp_fraction >= 0.8:
+            if my_pokemon.current_hp_fraction >= 0.85:  # Slightly higher threshold
                 return 0
-            return 150 if my_pokemon.current_hp_fraction <= 0.5 else 100
+
+            # Recovery more valuable on bulky Pokemon / win conditions
+            base_score = 180 if my_pokemon.current_hp_fraction <= 0.4 else 130  # Increased from 150/100
+
+            # Bonus if we're a win condition (high offense + setup)
+            my_offense = max(self.get_stat(my_pokemon, "atk"), self.get_stat(my_pokemon, "spa"))
+            has_setup = any(m.id in SETUP_MOVES for m in battle.available_moves[slot_index])
+            if my_offense > 140 and has_setup:
+                base_score += 30  # Keeping sweeper alive
+
+            # Bonus if partner can cover us
+            if partner and not partner.fainted:
+                partner_has_protect = any(m.id in PROTECT_MOVES for m in battle.available_moves[partner_slot])
+                partner_has_redirect = any(m.id in ["followme", "ragepowder"] for m in battle.available_moves[partner_slot])
+                if partner_has_protect or partner_has_redirect:
+                    base_score += 20
+
+            return base_score
 
         elif move.id == "trickroom":
 
             score = 0 # reset score cause trickroom does not work with prankster
 
-            if all(not self.isFaster(my_pokemon, opp, battle) for opp in battle.opponent_active_pokemon if opp is not None and not opp.fainted):
-                score += 50
+            # Trick Room value: we benefit if we're slower than opponents
+            my_slower_count = sum(1 for opp in battle.opponent_active_pokemon if opp and not opp.fainted and not self.isFaster(my_pokemon, opp, battle))
+            if my_slower_count >= 1:
+                score += 80  # Increased from 50
 
             if partner and not partner.fainted:
-                if all(not self.isFaster(partner, opp, battle) for opp in battle.opponent_active_pokemon if opp is not None and not opp.fainted):
-                    score += 130
+                partner_slower_count = sum(1 for opp in battle.opponent_active_pokemon if opp and not opp.fainted and not self.isFaster(partner, opp, battle))
+                if partner_slower_count >= 1:
+                    score += 160  # Increased from 130: TR enabling partner is huge
+
+                # Extra value if partner is very slow but powerful (TR sweeper)
+                partner_speed = self.get_stat(partner, "spe")
+                partner_offense = max(self.get_stat(partner, "atk"), self.get_stat(partner, "spa"))
+                if partner_speed < 60 and partner_offense > 150:
+                    score += 50  # Classic TR sweeper
+
+            # Bonus if opponent has Tailwind up (counters it)
+            if SideCondition.TAILWIND in battle.opponent_side_conditions:
+                score += 60  # Anti-Tailwind tech
+
+            # Penalty if we already have Trick Room
+            if Field.TRICK_ROOM in battle.fields:
+                return 0
 
             return score
 
@@ -177,14 +310,30 @@ class StatusMoveMixin:
 
             if ((move.id == "coaching" and (partner_atk > partner_spa)) or
                 (move.id == "decorate" and (partner_spa > partner_atk))):
-                score += 80
+                score += 100  # Increased from 80: boosting partner's offense is very strong
 
                 if self.isFaster(my_pokemon, partner):
-                    score += 15
+                    score += 20  # Increased from 15: acting first means boost applies immediately
 
                     if is_going_to_faint:
-                        score += 10
-            print(f"score: {score} for {move}")
+                        score += 15  # Increased from 10: last-turn boost
+
+                # Extra value if partner can KO with the boost
+                for opp in battle.opponent_active_pokemon:
+                    if opp is not None and not opp.fainted:
+                        for p_move in battle.available_moves[partner_slot]:
+                            if p_move.base_power > 0:
+                                # Estimate boosted damage
+                                dmg = self.calculate_damage(partner, opp, p_move, battle)
+                                if move.id == "coaching" and p_move.category == MoveCategory.PHYSICAL:
+                                    dmg = dmg * 1.5
+                                elif move.id == "decorate" and p_move.category == MoveCategory.SPECIAL:
+                                    dmg = dmg * 2
+                                if dmg >= opp.current_hp_fraction * 100:
+                                    score += 50  # Boost secures KO
+                                    break
+
+            # print(f"score: {score} for {move}")  # Remove debug print
             return score
 
         return 40
@@ -278,39 +427,73 @@ class StatusMoveMixin:
 
             # Higher score for faster threats
             if self.isFaster(target, my_pokemon, battle):
-                threat_score += 20
+                threat_score += 30  # Increased from 20
 
             # Higher score for stronger attackers
             threat_score += max(target_atk, target_spa) // 2  # Simple scaling
 
+            # Additional threat: target can KO our active pokemon
+            for my_mon in battle.active_pokemon:
+                if my_mon and not my_mon.fainted:
+                    for opp_move in self.opp_team_movepool.get(target.species.capitalize(), []):
+                        try:
+                            opp_move_obj = Move(opp_move, 9)
+                            if opp_move_obj.base_power > 0:
+                                dmg = self.calculate_damage(target, my_mon, opp_move_obj, battle)
+                                if dmg >= my_mon.current_hp_fraction * 100:
+                                    threat_score += 25  # Target can KO us
+                                    break
+                        except:
+                            pass
+
             # Score based on move type
             if move_id in ["thunderwave", "glare", "stunspore"]:  # Paralysis
                 # Paralysis scores higher on fast opponents and strong threats
-                score += 50 + threat_score
-                # Bonus for paralyzing fast threats
+                # Paralysis is premium in VGC: halves speed + 25% fail chance
+                score += 80 + threat_score  # Increased from 50
+                # Bonus for paralyzing fast threats (speed control)
                 if self.isFaster(target, my_pokemon, battle):
+                    score += 50  # Increased from 30: neutralizing speed is huge
+                # Extra value if target is a setup sweeper (paralysis prevents setup)
+                if any(self.get_ability(target) == a for a in ["speedboost", "unburden", "swiftswim", "chlorophyll", "sandrush", "slushrush"]):
                     score += 30
 
             elif move_id == "willowisp":  # Burn
                 # Burn scores higher on physical attackers
                 if target_atk > target_spa:
-                    score += 60 + (target_atk // 2)
+                    score += 90 + (target_atk // 2)  # Increased from 60
+                    # Extra value vs physical setup sweepers
+                    if target.boosts.get("atk", 0) > 0:
+                        score += 40
                 else:
-                    score += 10  # Low value on special attackers
+                    score += 15  # Slightly increased from 10: chip damage still matters
                 # No value on Guts targets (checked via ability)
                 if self.get_ability(target) == "guts":
                     score = 0
+                # No value on Fire types (already checked) or Flash Fire / Water Bubble
+                if self.get_ability(target) in ["flashfire", "waterbubble"]:
+                    score = 0
 
             elif move_id in ["spore", "sleeppowder", "hypnosis"]:  # Sleep
-                # Sleep is highest on the biggest threat
-                score += 70 + threat_score
+                # Sleep is highest on the biggest threat - completely neutralizes
+                score += 100 + threat_score  # Increased from 70: sleep = 1-3 turns of nothing
+                # Extra value if target is the only answer to our wincon
+                # Bonus for Spore (100% accuracy) vs Sleep Powder (75%) vs Hypnosis (60%)
+                if move_id == "spore":
+                    score += 30
+                elif move_id == "sleeppowder":
+                    score += 10
 
             elif move_id in ["toxic", "poisonpowder"]:  # Poison/Toxic
-                # Poison/toxic is the lowest value of the group
-                score += 30 + (threat_score // 2)
+                # Poison/toxic is the lowest value of the group but still useful
+                score += 45 + (threat_score // 2)  # Increased from 30
+                # Toxic more valuable on bulky targets that won't die soon
+                target_hp = self.get_stat(target, "hp")
+                if target_hp > 150:
+                    score += 20  # Toxic on bulky mons = long-term pressure
 
             else:  # Other status moves
-                score += 40 + (threat_score // 2)
+                score += 50 + (threat_score // 2)  # Increased from 40
 
             return max(0, score)
 
@@ -334,7 +517,7 @@ class StatusMoveMixin:
             if move_id == "charm":
                 # Charm (-2 Atk) is best against high-Attack physical threats
                 target_atk = self.get_stat(target, "atk")
-                score += 50 + (target_atk // 2)
+                score += 80 + (target_atk // 2)  # Increased from 50
 
             elif move_id == "fake tears":
                 # Fake Tears (-2 Sp. Def) is best when my side has special attackers
@@ -344,38 +527,52 @@ class StatusMoveMixin:
                     my_atk_total = sum(self.get_stat(p, "atk") for p in my_active_pokemon)
                     if my_spa_total > my_atk_total:  # My side favors special attacks
                         target_spd = self.get_stat(target, "spd")
-                        score += 50 + (target_spd // 2)
+                        score += 80 + (target_spd // 2)  # Increased from 50
+                    else:
+                        # Still valuable if we have any special attackers
+                        if my_spa_total > 0:
+                            target_spd = self.get_stat(target, "spd")
+                            score += 50 + (target_spd // 2)
                 else:
                     # Fallback: just check if target has high SpD to lower
                     target_spd = self.get_stat(target, "spd")
-                    score += 30 + (target_spd // 2)
+                    score += 50 + (target_spd // 2)  # Increased from 30
 
             elif move_id in ["screech", "leer", "growl"]:
                 # Screech/Leer/Growl-style scale by the relevant stat
                 stat_map = {"screech": "def", "leer": "def", "growl": "atk"}
                 stat = stat_map[move_id]
                 target_stat = self.get_stat(target, stat)
-                score += 40 + (target_stat // 2)
+                score += 60 + (target_stat // 2)  # Increased from 40
 
             elif move_id == "eerie impulse":
                 # Eerie Impulse (-2 SpA)
                 target_spa = self.get_stat(target, "spa")
-                score += 40 + (target_spa // 2)
+                score += 60 + (target_spa // 2)  # Increased from 40
 
             elif move_id == "tickle":
                 # Tickle lowers Atk and Def so we check both
                 target_atk = self.get_stat(target, "atk")
                 target_def = self.get_stat(target, "def")
-                score += 30 + (target_atk // 4) + (target_def // 4)
+                score += 50 + (target_atk // 4) + (target_def // 4)  # Increased from 30
             
+
+            # Parting Shot: -1 Atk, -1 Spa + pivot
+            elif move_id == "partingshot":
+                target_atk = self.get_stat(target, "atk")
+                target_spa = self.get_stat(target, "spa")
+                score += 70 + (target_atk // 4) + (target_spa // 4)  # Base value for pivot + debuff
+
 
             # Scale by how threatening the target is (its offensive stats)
             threat_score = max(self.get_stat(target, "atk"), self.get_stat(target, "spa")) // 2
             score += threat_score
-            
-            if move_id == "partingshot":
-                # Parting Shot (-1 Atk, -1 Spa)
-                score += threat_score // 2
+
+            # Bonus if target has positive boosts (removing them is high value)
+            if hasattr(target, 'boosts') and target.boosts:
+                positive_boosts = sum(boost for boost in target.boosts.values() if boost > 0)
+                if positive_boosts > 0:
+                    score += positive_boosts * 20  # Removing boosts is very valuable
 
             
             lowered_stats = self.STAT_DEBUFF.get(move_id, [])
@@ -422,11 +619,11 @@ class StatusMoveMixin:
 
                 if not (is_trickroom_user or is_tailwind_user):
                     return 0
-                
+
                 # Check if target is already Taunted
                 if hasattr(target, 'effects') and Effect.TAUNT in target.effects:
                     return 0
-                
+
                 # Reduce value if that side's Tailwind or Trick Room is already active
                 side_condition_modifier = 1.0
                 if SideCondition.TAILWIND in battle.opponent_side_conditions:
@@ -434,8 +631,8 @@ class StatusMoveMixin:
                 if Field.TRICK_ROOM in battle.fields:
                     side_condition_modifier *= 0.5  # Less useful if Trick Room already active
 
-                # Base score for Taunt
-                score += 100
+                # Base score for Taunt - increased to reflect VGC importance
+                score += 150  # Increased from 100: Taunt is premium disruption
 
                 score *= side_condition_modifier
 
@@ -469,12 +666,18 @@ class StatusMoveMixin:
                     return 0
 
                 # Otherwise, calculate HIGH score
-                score = 130  # base score
+                score = 180  # base score - increased from 130: Encore is game-changing in VGC
                 if last_move_id in SETUP_MOVES:
                     # Check if target already has any positive boost
                     if hasattr(target, 'boosts') and target.boosts:
                         if any(boost > 0 for boost in target.boosts.values()):
-                            score += 15
+                            score += 30  # Increased from 15: locking setup sweeper is huge
+                # Extra value if target used Protect (wastes their turn completely)
+                if last_move_id in PROTECT_MOVES:
+                    score += 40  # Encore on Protect = free turns
+                # Extra value if target used Fake Out (locks them into a one-time move)
+                if last_move_id == "fakeout":
+                    score += 30
 
                 return score
 

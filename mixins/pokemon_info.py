@@ -4,6 +4,8 @@ from pikabot.data_loader import POKEMON_VGC_DATA
 class PokemonInfoMixin:
     """Returns an ability for the pokemon"""
     def get_ability(self, pokemon):
+        if pokemon is None:
+            return None
         if pokemon.ability is not None:
             return pokemon.ability
         else:
@@ -17,6 +19,8 @@ class PokemonInfoMixin:
         return None
     """Return the stat for the pokemon + boosts"""
     def get_stat(self, pokemon, stat):
+        if pokemon is None:
+            return 0
         base_stat = pokemon.base_stats.get(stat, 0)
         boosts = pokemon.boosts.get(stat, 0)
         raw_stat = 0
@@ -83,6 +87,8 @@ class PokemonInfoMixin:
             return math.floor(raw_stat * (2 / (2 - boosts)))
     """Return item for the pokemon"""
     def get_item(self, pokemon):
+        if pokemon is None:
+            return None
         if pokemon.item is not None:
             return pokemon.item
         else:
