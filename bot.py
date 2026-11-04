@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import threading
+from decimal import Decimal
 from poke_env.player import Player, RandomPlayer
 from poke_env.player.battle_order import DoubleBattleOrder
 from pikabot.mixins.opponent_tracker import OpponentTrackerMixin
@@ -13,10 +14,18 @@ from pikabot.mixins.ordering import OrderingMixin
 from pikabot.mixins.switching import SwitchingMixin
 
 
+class _DecimalEncoder(json.JSONEncoder):
+    """JSON encoder that handles Decimal by converting to float."""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super().default(obj)
+
+
 # Shared lock for thread-safe file writes to master.json
 _master_file_lock = threading.Lock()
 
-# Shared master path - both bots write to the same file
+# Shared master path - both bots write to the same file (JSONL format: one match per line)
 _SHARED_MASTER_PATH = os.path.join("battle_logs", "master.json")
 
 
@@ -33,7 +42,8 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         self.last_moved_used = [None, None]
 
         # Match logging attributes - instance-level for isolation during battle
-        self.all_matches = []
+        # all_matches now only stores UIDs for duplicate detection, not full match data (prevents OOM)
+        self.all_matches = []  # List of match_uids (strings) for deduplication
         self.current_match = None
         self.my_last_turn_actions = {}  # Keyed by battle_tag - actions from PREVIOUS turn for battle_history
         self._current_turn_planned = {}  # Keyed by battle_tag - planned moves for CURRENT turn (for move turn's target_moves)
@@ -44,60 +54,47 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
         # Use shared master path for bot-vs-bot (both instances write to same file)
         self.master_path = _SHARED_MASTER_PATH
 
-        # Load existing matches if master file exists (for resume capability)
+        # Load existing match UIDs if master file exists (for resume capability & deduplication)
+        # Uses JSONL format: one JSON match per line for memory-efficient streaming
+        self._load_existing_uids()
+
+    def _load_existing_uids(self):
+        """Load existing match UIDs from master.jsonl for deduplication.
+        Streams the file line by line to avoid loading all matches into memory."""
+        self.all_matches = []  # Reset to list of UIDs (strings)
         if os.path.exists(self.master_path):
             try:
                 with open(self.master_path, 'r') as f:
-                    data = json.load(f)
-                    self.all_matches = data.get("matches", [])
-            except (json.JSONDecodeError, KeyError):
-                # If cannot be parsed, rename to backup and start fresh
-                os.rename(self.master_path, self.master_path + ".bak")
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            match = json.loads(line)
+                            uid = match.get("match_uid")
+                            if uid:
+                                self.all_matches.append(uid)
+                        except json.JSONDecodeError:
+                            # Skip malformed lines
+                            continue
+            except Exception as e:
+                print(f"Error loading existing UIDs: {e}")
                 self.all_matches = []
 
-    def _write_master_file(self):
-        """Write all matches to the shared master JSON file using thread-safe read-merge-write."""
+    def _append_match(self, match):
+        """Append a single match to the master file (JSONL format).
+        Thread-safe and memory-efficient - writes only the new match."""
         with _master_file_lock:
             try:
                 # Create directory if it doesn't exist
                 os.makedirs(os.path.dirname(self.master_path), exist_ok=True)
 
-                # Read current file to get latest matches from other bot
-                current_matches = []
-                if os.path.exists(self.master_path):
-                    try:
-                        with open(self.master_path, 'r') as f:
-                            data = json.load(f)
-                            current_matches = data.get("matches", [])
-                    except (json.JSONDecodeError, KeyError):
-                        current_matches = []
-
-                # Merge our matches with existing (avoid duplicates by match_uid)
-                existing_uids = {m.get("match_uid") for m in current_matches if m.get("match_uid")}
-                for match in self.all_matches:
-                    if match.get("match_uid") not in existing_uids:
-                        current_matches.append(match)
-
-                # Prepare data
-                data = {"matches": current_matches}
-
-                # Write to temp file first
-                temp_path = self.master_path + ".tmp"
-                with open(temp_path, 'w') as f:
-                    json.dump(data, f, indent=2)
-
-                # Atomic replace
-                os.replace(temp_path, self.master_path)
+                # Append match as a single JSON line (compact JSONL format)
+                with open(self.master_path, 'a') as f:
+                    f.write(json.dumps(match, separators=(',', ':'), cls=_DecimalEncoder) + '\n')
 
             except Exception as e:
-                print(f"Error writing master file: {e}")
-                # Clean up temp file if it exists
-                temp_path = self.master_path + ".tmp"
-                if os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except:
-                        pass
+                print(f"Error appending match to master file: {e}")
 
     def _battle_finished_callback(self, battle):
         # Call super() first if it exists
@@ -119,19 +116,21 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
 
                 self.current_match["total_turns"] = battle.turn
 
-                # Avoid duplicates
+                # Avoid duplicates - check against UID list
                 match_uid = self.current_match["match_uid"]
-                if not any(match.get("match_uid") == match_uid for match in self.all_matches):
-                    self.all_matches.append(self.current_match)
+                if match_uid not in self.all_matches:
+                    # Append match to file immediately (incremental write)
+                    self._append_match(self.current_match)
+                    # Track UID for future deduplication
+                    self.all_matches.append(match_uid)
                     self._session_match_count += 1
 
-                # Write all matches to shared master file (thread-safe)
-                self._write_master_file()
+                    # Print confirmation
+                    print(f"saved match {match_uid[:8]} ({self._session_match_count} matches total for {self.username})")
+                else:
+                    print(f"duplicate match {match_uid[:8]} skipped")
 
-                # Print confirmation
-                print(f"saved match {match_uid[:8]} ({self._session_match_count} matches total for {self.username})")
-
-                # Reset current match
+                # Reset current match - clear from memory immediately after writing
                 self.current_match = None
 
         except Exception as e:
@@ -610,8 +609,13 @@ class PikaBot(OpponentTrackerMixin, PokemonInfoMixin, SpeedMixin, DamageMixin, S
             if self.current_match is None or self.current_match["match_id"] != battle_tag:
                 # Safety net: if current_match exists but is for a different battle, save it first
                 if self.current_match is not None:
-                    self.all_matches.append(self.current_match)
-                    self._write_master_file()
+                    match_uid = self.current_match.get("match_uid")
+                    if match_uid and match_uid not in self.all_matches:
+                        # Append unfinished match to file immediately
+                        self._append_match(self.current_match)
+                        self.all_matches.append(match_uid)
+                        self._session_match_count += 1
+                        print(f"saved unfinished match {match_uid[:8]} ({self._session_match_count} matches total for {self.username})")
 
                 # Start new match
                 self.current_match = {

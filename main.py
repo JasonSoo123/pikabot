@@ -31,6 +31,11 @@ async def main():
     battle_count = 0
     for i, team1 in enumerate(VGC_TEAMS_LIST):
         for j, team2 in enumerate(VGC_TEAMS_LIST):
+            
+            if i < 4 or (i == 4 and j < 33):
+                battle_count += battles_per_pair
+                continue
+            
             print(f"Matchup {i*total_teams + j + 1}/{total_teams*total_teams}: Team {i+1} vs Team {j+1}")
             await run_team_vs_team(team1, team2, n_battles=battles_per_pair)
             battle_count += battles_per_pair
